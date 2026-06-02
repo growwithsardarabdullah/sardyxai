@@ -186,7 +186,7 @@ export async function getMonthlyTokenUsage(platform: string, modelId: string) {
   
   if (error) throw new Error(`Failed to fetch token usage: ${error.message}`);
   
-  return (data || []).reduce((sum, r) => sum + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
+  return (data || []).reduce((sum: number, r: any) => sum + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
 }
 
 // ============================================================================
@@ -257,7 +257,7 @@ export async function sumRateLimitTokens(
   
   if (error) throw new Error(`Failed to sum rate limit tokens: ${error.message}`);
   
-  return (data || []).reduce((sum, row) => sum + row.tokens, 0);
+  return (data || []).reduce((sum: number, row: any) => sum + row.tokens, 0);
 }
 
 export async function getRateLimitCooldown(platform: string, modelId: string, keyId: number) {
