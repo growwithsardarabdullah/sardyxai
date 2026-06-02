@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "tsc -p tsconfig.api.json",
+  "buildCommand": "npx tsc -p tsconfig.api.json",
   "installCommand": "npm install --legacy-peer-deps",
   "env": {
     "NODE_ENV": "production"
