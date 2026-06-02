@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "echo 'Build skipped - all artifacts are pre-compiled'",
+  "buildCommand": "npm run build",
   "installCommand": "npm install --legacy-peer-deps",
 
   "env": {
