@@ -1,5 +1,10 @@
 node_modules/
+# Ignore root dist/ but NOT server/dist/ or api files
 dist/
+!server/dist/
+!server/dist/**
+!api/*.js
+!api/*.js.map
 server/data/
 *.db
 *.db-wal
