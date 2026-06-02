@@ -20,6 +20,7 @@ server/data/**
 server/__tests__/
 client/src/
 client/public/
+server/src/
 scripts/
 repo-assets/
 docs/
