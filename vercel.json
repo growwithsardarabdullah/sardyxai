@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "npm run build",
+  "buildCommand": "tsc -p tsconfig.api.json && npm run build -w client",
   "installCommand": "npm install --legacy-peer-deps",
   "env": {
     "NODE_ENV": "production"
