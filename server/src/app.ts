@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { keysRouter } from './routes/keys.js';
 import { modelsRouter } from './routes/models.js';
@@ -82,14 +83,29 @@ export function createApp() {
 
   // Serve client static files (after API error handler)
   const clientDist = path.resolve(__dirname, '../../client/dist');
-  app.use(express.static(clientDist));
+  const clientIndexPath = path.join(clientDist, 'index.html');
+  
+  // Check if client dist exists before serving
+  if (fs.existsSync(clientDist)) {
+    app.use(express.static(clientDist));
+  } else {
+    console.warn('[app] Client dist directory not found at:', clientDist);
+  }
+  
   // SPA fallback — serve index.html for non-API routes
   app.use((req, res, next) => {
     if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
       next();
       return;
     }
-    res.sendFile(path.join(clientDist, 'index.html'));
+    
+    // Try to serve index.html if it exists
+    if (fs.existsSync(clientIndexPath)) {
+      res.sendFile(clientIndexPath);
+    } else {
+      // Fallback: serve a simple response
+      res.status(200).json({ message: 'API is running. Client UI not available.' });
+    }
   });
 
   return app;

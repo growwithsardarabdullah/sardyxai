@@ -1,28 +1,40 @@
 import type { Request, Response } from 'express';
 
+// Initialize env from server FIRST
+import '../server/dist/env.js';
+
 // Import from compiled server build
 import { createApp } from '../server/dist/app.js';
 import { initDb } from '../server/dist/db/index.js';
 import { startHealthChecker } from '../server/dist/services/health.js';
 
-// Initialize env from server
-import '../server/dist/env.js';
-
 // Initialize database once on cold start
 let initialized = false;
 let app: any = null;
+let initError: Error | null = null;
 
 async function initializeApp() {
   if (initialized) return;
+  if (initError) throw initError;
   
   try {
+    console.log('[Vercel] Starting initialization...');
+    console.log('[Vercel] NODE_ENV:', process.env.NODE_ENV);
+    
     initDb();
+    console.log('[Vercel] Database initialized');
+    
     app = createApp();
+    console.log('[Vercel] Express app created');
+    
     startHealthChecker();
+    console.log('[Vercel] Health checker started');
+    
     initialized = true;
     console.log('[Vercel] App initialized successfully');
   } catch (error) {
     console.error('[Vercel] Initialization failed:', error);
+    initError = error as Error;
     throw error;
   }
 }
@@ -38,9 +50,14 @@ export default async (req: Request, res: Response) => {
     return app(req, res);
   } catch (error) {
     console.error('[Vercel Handler] Error:', error);
-    res.status(500).json({
-      error: 'Internal Server Error',
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
+    console.error('[Vercel Handler] Stack:', error instanceof Error ? error.stack : 'No stack');
+    
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'Internal Server Error',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        details: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.stack : String(error)) : undefined,
+      });
+    }
   }
 };

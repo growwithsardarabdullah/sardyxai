@@ -24,40 +24,53 @@ export function initDb(dbPath?: string): Database.Database {
   const resolvedPath = dbPath ?? DB_PATH;
   const isMemory = resolvedPath === ':memory:';
 
-  if (!isMemory) {
-    const dataDir = path.dirname(resolvedPath);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
+  try {
+    if (!isMemory) {
+      const dataDir = path.dirname(resolvedPath);
+      console.log('[db] Initializing database at:', resolvedPath);
+      
+      if (!fs.existsSync(dataDir)) {
+        console.log('[db] Creating directory:', dataDir);
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
     }
+
+    console.log('[db] Opening database...');
+    db = new Database(resolvedPath);
+    
+    if (!isMemory) db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+
+    console.log('[db] Creating tables...');
+    createTables(db);
+    console.log('[db] Initializing encryption key...');
+    initEncryptionKey(db);
+    console.log('[db] Seeding models...');
+    seedModels(db);
+    migrateModels(db);
+    migrateModelsV2(db);
+    migrateModelsV3Ranks(db);
+    migrateModelsV4(db);
+    migrateModelsV5(db);
+    migrateModelsV6(db);
+    migrateModelsV7(db);
+    migrateModelsV8(db);
+    migrateModelsV9(db);
+    migrateModelsV10(db);
+    migrateModelsV11(db);
+    migrateModelsV12(db);
+    migrateModelsV13(db);
+    migrateModelsV14(db);
+    migrateModelsV15(db);
+    migrateModelsV16Vision(db);
+    ensureUnifiedKey(db);
+
+    console.log(`Database initialized at ${resolvedPath}`);
+    return db;
+  } catch (error) {
+    console.error('[db] Initialization failed:', error);
+    throw error;
   }
-
-  db = new Database(resolvedPath);
-  if (!isMemory) db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-
-  createTables(db);
-  initEncryptionKey(db);
-  seedModels(db);
-  migrateModels(db);
-  migrateModelsV2(db);
-  migrateModelsV3Ranks(db);
-  migrateModelsV4(db);
-  migrateModelsV5(db);
-  migrateModelsV6(db);
-  migrateModelsV7(db);
-  migrateModelsV8(db);
-  migrateModelsV9(db);
-  migrateModelsV10(db);
-  migrateModelsV11(db);
-  migrateModelsV12(db);
-  migrateModelsV13(db);
-  migrateModelsV14(db);
-  migrateModelsV15(db);
-  migrateModelsV16Vision(db);
-  ensureUnifiedKey(db);
-
-  console.log(`Database initialized at ${resolvedPath}`);
-  return db;
 }
 
 function createTables(db: Database.Database) {
