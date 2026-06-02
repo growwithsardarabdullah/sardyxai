@@ -6,7 +6,10 @@ import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.resolve(__dirname, '../../data/freeapi.db');
+// Use /tmp for Vercel serverless (ephemeral), or local data/ for development
+const DB_PATH = process.env.NODE_ENV === 'production' 
+  ? '/tmp/freeapi.db'
+  : path.resolve(__dirname, '../../data/freeapi.db');
 
 let db: Database.Database;
 

@@ -29,11 +29,11 @@ function parseHexKey(value: string, source: 'env' | 'db'): Buffer {
 // Outside production we auto-generate and persist a key so a fresh clone
 // (`npm run dev`) boots without manual setup — the placeholder ENCRYPTION_KEY
 // in .env.example would otherwise crash the server on boot, which surfaces in
-// the client as "Can't reach the server". Production still requires an explicit
-// env key: a generated key lives only in the local DB and silently losing it
-// would make every stored API key undecryptable.
+// the client as "Can't reach the server". 
+// On Vercel (ephemeral storage), we also allow fallback since data doesn't persist anyway.
 function isDevFallbackAllowed(): boolean {
-  return process.env.NODE_ENV !== 'production';
+  const isVercel = !!process.env.VERCEL;
+  return process.env.NODE_ENV !== 'production' || isVercel;
 }
 
 function missingKeyError(): Error {
