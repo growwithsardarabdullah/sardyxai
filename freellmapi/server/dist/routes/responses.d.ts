@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ChatMessage, ChatToolCall, ChatToolDefinition, ChatToolChoice } from '@freellmapi/shared/types.js';
-export declare const responsesRouter: import("express-serve-static-core").Router;
+export declare const responsesRouter: any;
 declare const responsesRequestSchema: z.ZodObject<{
     model: z.ZodOptional<z.ZodString>;
     instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;

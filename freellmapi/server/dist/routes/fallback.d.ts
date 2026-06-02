@@ -1,2 +1,2 @@
-export declare const fallbackRouter: import("express-serve-static-core").Router;
+export declare const fallbackRouter: any;
 //# sourceMappingURL=fallback.d.ts.map

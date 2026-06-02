@@ -1,2 +1,2 @@
-export declare const keysRouter: import("express-serve-static-core").Router;
+export declare const keysRouter: any;
 //# sourceMappingURL=keys.d.ts.map

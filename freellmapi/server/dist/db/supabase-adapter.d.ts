@@ -1,4 +1,3 @@
-import { SupabaseClient } from '@supabase/supabase-js';
 interface Database {
     prepare: (sql: string) => PreparedStatement;
     exec: (sql: string) => void;
@@ -29,6 +28,6 @@ export declare function migrateToSupabase(): Promise<boolean | undefined>;
  * Health check for Supabase connection
  */
 export declare function healthCheck(): Promise<boolean>;
-export declare function getSupabaseClient(): SupabaseClient<any, "public", "public", any, any>;
+export declare function getSupabaseClient(): any;
 export {};
 //# sourceMappingURL=supabase-adapter.d.ts.map

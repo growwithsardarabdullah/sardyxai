@@ -1,6 +1,6 @@
 import type { Request } from 'express';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
-export declare const proxyRouter: import("express-serve-static-core").Router;
+export declare const proxyRouter: any;
 export declare function timingSafeStringEqual(provided: string, expected: string): boolean;
 export declare function extractApiToken(req: Request): string | undefined;
 export declare function getStickyModel(messages: ChatMessage[]): number | undefined;
