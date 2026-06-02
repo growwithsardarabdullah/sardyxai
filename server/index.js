@@ -1,3 +1,4 @@
+import express from 'express';
 import './dist/env.js';
 import { createApp } from './dist/app.js';
 import { initDb } from './dist/db/index.js';
