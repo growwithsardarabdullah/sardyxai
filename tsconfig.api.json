@@ -16,5 +16,6 @@
     "noImplicitAny": false
   },
   "include": ["api/**/*"],
+  "files": ["api/index.ts"],
   "exclude": ["node_modules", "dist", "server/dist", "client/dist", "shared"]
 }
