@@ -3,12 +3,11 @@
   "private": true,
   "workspaces": [
     "shared",
-    "server",
-    "client"
+    "server"
   ],
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail --names server,client \"npm run dev -w server\" \"npm run dev -w client\"",
-    "test": "npm run test -w server && npm run test -w client --if-present",
+    "dev": "concurrently --kill-others-on-fail --names server \"npm run dev -w server\"",
+    "test": "npm run test -w server",
     "build": "tsc -p tsconfig.api.json",
     "build:server": "npm run build -w server"
   },
