@@ -24,6 +24,10 @@ FROM deps AS build
 WORKDIR /app
 
 COPY freellmapi/ ./
+# Vercel's serverless function entry lives at /api/ at the project root.
+# The Dockerfile context is the repo root, so copy it in explicitly.
+# tsc -p tsconfig.api.json compiles this directory.
+COPY api/ ./api/
 
 RUN npm run build
 RUN npm prune --omit=dev
@@ -39,6 +43,7 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/shared ./shared
 COPY --from=build --chown=node:node /app/server/package.json ./server/package.json
 COPY --from=build --chown=node:node /app/server/dist ./server/dist
+COPY --from=build --chown=node:node /app/api ./api
 
 RUN mkdir -p /app/server/data && chown -R node:node /app/server/data
 
