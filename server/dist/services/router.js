@@ -233,7 +233,7 @@ function orderChain(chain, strategy) {
  * @param preferredModelDbId - try this model first (sticky session)
  * @param requireVision - only consider models that accept image input (#118)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys, preferredModelDbId, requireVision = false) {
+export function routeRequest(estimatedTokens = 1000, skipKeys, preferredModelDbId, requireVision = false, userEmail) {
     const db = getDb();
     const strategy = getRoutingStrategy();
     if (strategy !== 'priority')
@@ -267,7 +267,11 @@ export function routeRequest(estimatedTokens = 1000, skipKeys, preferredModelDbI
         if (!provider)
             continue;
         // Get enabled keys that have not already failed validation or decryption.
-        const keys = db.prepare("SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')").all(entry.platform);
+        // When userEmail is provided and non-empty, filter to that user's keys only.
+        // Empty/undefined means no user scope — return all keys (legacy compat).
+        const keys = (userEmail && userEmail !== '')
+            ? db.prepare("SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown') AND user_email = ?").all(entry.platform, userEmail)
+            : db.prepare("SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')").all(entry.platform);
         if (keys.length === 0)
             continue;
         // Get limits once for this model

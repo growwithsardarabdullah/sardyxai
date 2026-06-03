@@ -46,7 +46,7 @@ export declare function refreshStatsCache(db: Database, force?: boolean): void;
  * @param preferredModelDbId - try this model first (sticky session)
  * @param requireVision - only consider models that accept image input (#118)
  */
-export declare function routeRequest(estimatedTokens?: number, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision?: boolean): RouteResult;
+export declare function routeRequest(estimatedTokens?: number, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision?: boolean, userEmail?: string): RouteResult;
 /**
  * Per-model routing scores for the dashboard. Deterministic (expected
  * reliability, not sampled) so the table is stable between polls. Returns the

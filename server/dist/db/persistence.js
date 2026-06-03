@@ -105,6 +105,8 @@ export function createPersistence() {
         const startMs = Date.now();
         const total = queue.length;
         let ok = 0;
+        let failed = 0;
+        const failedLabels = [];
         try {
             while (queue.length > 0) {
                 const job = queue.shift();
@@ -116,11 +118,21 @@ export function createPersistence() {
                     ok++;
                 }
                 catch (err) {
-                    console.error(`[persistence] Write failed (${job.label}): ${err.message}`);
+                    failed++;
+                    if (failedLabels.length < 5)
+                        failedLabels.push(job.label);
+                    console.error(`[persistence] Write FAILED (${job.label}): ${err.message}`);
                 }
             }
             const elapsed = Date.now() - startMs;
-            console.log(`[persistence] Wrote ${ok}/${total} to Supabase in ${elapsed}ms`);
+            if (failed > 0) {
+                console.error(`[persistence] BATCH: ${ok}/${total} succeeded, ${failed}/${total} FAILED in ${elapsed}ms — data NOT persisted to Supabase`);
+                console.error(`[persistence] Failed jobs: ${failedLabels.join(', ')}${failed > 5 ? ` ... and ${failed - 5} more` : ''}`);
+                console.error(`[persistence] CHECK: Is SUPABASE_SERVICE_ROLE_KEY set? RLS requires service_role for ALL writes.`);
+            }
+            else {
+                console.log(`[persistence] Wrote ${ok}/${total} to Supabase in ${elapsed}ms`);
+            }
         }
         finally {
             workerBusy = false;
@@ -191,15 +203,14 @@ async function hydrateFromSupabase(supabase) {
     //    uses rowid. Insert blindly; if a key with the same platform+label exists
     //    already, the user will see it twice until dedup is added. Acceptable for
     //    v1: in practice the local DB is empty on cold start, so this just adds
-    //    the rows. If a duplicate already exists, the dedup happens at the app
-    //    level (e.g. by the health checker flipping status).
+    //    the rows.
     const insertKey = db.prepare(`
     INSERT INTO api_keys
-      (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (user_email, platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
     for (const k of keys) {
-        insertKey.run(k.platform, k.label ?? '', k.encrypted_key, k.iv, k.auth_tag, k.status ?? 'unknown', truthyToInt(k.enabled), k.base_url);
+        insertKey.run(k.user_email ?? '', k.platform, k.label ?? '', k.encrypted_key, k.iv, k.auth_tag, k.status ?? 'unknown', truthyToInt(k.enabled), k.base_url);
     }
     // 4) Fallback config. The Supabase model_db_id differs from the local one,
     //    so we resolve each row by (platform, model_id) join → local id.
@@ -221,11 +232,11 @@ async function hydrateFromSupabase(supabase) {
     }
     // 5) Settings — UPSERT so re-hydration overwrites with the durable value.
     const insertSetting = db.prepare(`
-    INSERT INTO settings (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    INSERT INTO settings (key, user_email, value) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, user_email = excluded.user_email
   `);
     for (const s of settings) {
-        insertSetting.run(s.key, s.value);
+        insertSetting.run(s.key, s.user_email ?? '', s.value);
     }
     console.log(`[persistence] Hydrated ${users.length} users, ${keys.length} api_keys, ` +
         `${models.length} models, ${fallbackInserted} fallback_config, ${settings.length} settings`);

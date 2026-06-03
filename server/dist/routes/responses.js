@@ -3,9 +3,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { routeRequest, recordRateLimitHit, recordSuccess } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
-import { getUnifiedApiKey } from '../db/index.js';
+import { getUserForUnifiedKey } from '../db/index.js';
 import { contentToString } from '../lib/content.js';
-import { isRetryableError, timingSafeStringEqual, extractApiToken, getStickyModel, setStickyModel, logRequest, } from './proxy.js';
+import { isRetryableError, extractApiToken, getStickyModel, setStickyModel, logRequest, } from './proxy.js';
 export const responsesRouter = Router();
 // ─────────────────────────────────────────────────────────────────────────
 // OpenAI Responses API shim (POST /v1/responses).
@@ -210,9 +210,17 @@ responsesRouter.post('/responses', async (req, res) => {
     const start = Date.now();
     // Same unified-key auth as the proxy (accepts Bearer or x-api-key).
     const token = extractApiToken(req);
-    const unifiedKey = getUnifiedApiKey();
-    if (!token || !timingSafeStringEqual(token, unifiedKey)) {
-        res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
+    if (!token) {
+        res.status(401).json({
+            error: { message: 'Invalid API key', type: 'authentication_error' },
+        });
+        return;
+    }
+    const userEmail = getUserForUnifiedKey(token);
+    if (userEmail === null) {
+        res.status(401).json({
+            error: { message: 'Invalid API key', type: 'authentication_error' },
+        });
         return;
     }
     const parsed = responsesRequestSchema.safeParse(req.body);
@@ -266,7 +274,7 @@ responsesRouter.post('/responses', async (req, res) => {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         let route;
         try {
-            route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+            route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, false, userEmail);
         }
         catch (err) {
             const status = lastError ? 429 : (err.status ?? 503);

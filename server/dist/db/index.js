@@ -112,6 +112,7 @@ function createTables(db) {
 
     CREATE TABLE IF NOT EXISTS api_keys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_email TEXT NOT NULL DEFAULT '',
       platform TEXT NOT NULL,
       label TEXT NOT NULL DEFAULT '',
       encrypted_key TEXT NOT NULL,
@@ -166,6 +167,7 @@ function createTables(db) {
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL DEFAULT '',
       value TEXT NOT NULL
     );
 
@@ -200,6 +202,8 @@ function createTables(db) {
     ensureApiKeysBaseUrlColumn(db);
     ensureRequestTtfbColumn(db);
     ensureUsersSessionVersionColumn(db);
+    ensureApiKeysUserEmailColumn(db);
+    ensureSettingsUserEmailColumn(db);
 }
 // `ttfb_ms` is the time-to-first-byte for streaming responses (ms from dispatch
 // to the first chunk). NULL for non-streaming or pre-existing rows. Feeds the
@@ -232,6 +236,21 @@ function ensureUsersSessionVersionColumn(db) {
     const columns = db.prepare('PRAGMA table_info(users)').all();
     if (!columns.some(col => col.name === 'session_version')) {
         db.prepare("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0").run();
+    }
+}
+// `user_email` scopes API keys and settings to individual users in multi-user mode.
+// Added for multi-user support; existing rows get empty string (shared pool fallback).
+function ensureApiKeysUserEmailColumn(db) {
+    const columns = db.prepare('PRAGMA table_info(api_keys)').all();
+    if (!columns.some(col => col.name === 'user_email')) {
+        db.prepare("ALTER TABLE api_keys ADD COLUMN user_email TEXT NOT NULL DEFAULT ''").run();
+        db.prepare("CREATE INDEX IF NOT EXISTS idx_api_keys_user_email ON api_keys(user_email)").run();
+    }
+}
+function ensureSettingsUserEmailColumn(db) {
+    const columns = db.prepare('PRAGMA table_info(settings)').all();
+    if (!columns.some(col => col.name === 'user_email')) {
+        db.prepare("ALTER TABLE settings ADD COLUMN user_email TEXT NOT NULL DEFAULT ''").run();
     }
 }
 function seedModels(db) {
@@ -1357,10 +1376,14 @@ function migrateModelsV16Vision(db) {
     apply();
 }
 function ensureUnifiedKey(db) {
+    // Create a legacy global unified key for backward compatibility. Per-user
+    // keys are created via ensureUserUnifiedKey(email) when users first visit
+    // the settings page. The proxy checks per-user keys first, then falls back
+    // to this legacy global key.
     const existing = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get();
     if (!existing) {
         const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-        db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
+        db.prepare("INSERT INTO settings (key, user_email, value) VALUES ('unified_api_key', '', ?)").run(key);
         console.log(`\n  Your unified API key: ${key}\n`);
         // Persist to Supabase immediately so it survives cold starts
         getPersistence().enqueueWrite(async () => {
@@ -1368,36 +1391,90 @@ function ensureUnifiedKey(db) {
             const sb = getSupabaseAdmin();
             if (!sb)
                 return;
-            const { error } = await sb.from('settings').upsert({ key: 'unified_api_key', value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+            const { error } = await sb.from('settings').upsert({ key: 'unified_api_key', user_email: '', value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
             if (error)
                 throw new Error(`settings upsert (unified key init): ${error.message}`);
         }, 'settings:unified_api_key:init');
     }
 }
-export function getUnifiedApiKey() {
-    const db = getDb();
-    const row = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get();
-    return row.value;
+// Per-user unified API key helpers. The settings key format is
+// `unified_api_key` with the user_email column scoping access.
+// In local SQLite, settings uses `key TEXT PRIMARY KEY`, so each user's
+// key is stored as `unified_api_key:{email}` to keep PK uniqueness.
+const UNIFIED_KEY_PREFIX = 'unified_api_key:';
+function userKeySetting(userEmail) {
+    return `${UNIFIED_KEY_PREFIX}${userEmail}`;
 }
-export function regenerateUnifiedKey() {
+export function getUnifiedApiKey(userEmail) {
     const db = getDb();
+    if (userEmail) {
+        const row = db.prepare("SELECT value FROM settings WHERE key = ? AND user_email = ?")
+            .get(userKeySetting(userEmail), userEmail);
+        if (row)
+            return row.value;
+    }
+    // Fallback: check for a legacy global unified key (backward compat)
+    const legacy = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get();
+    return legacy?.value ?? '';
+}
+/** Look up which user_email owns a given unified API key value.
+ *  Returns the user's email, '' for the legacy global key, or null if not found.
+ */
+export function getUserForUnifiedKey(apiKey) {
+    const db = getDb();
+    // Check per-user keys first
+    const row = db.prepare("SELECT user_email FROM settings WHERE key LIKE ? AND value = ?")
+        .get(`${UNIFIED_KEY_PREFIX}%`, apiKey);
+    if (row?.user_email)
+        return row.user_email;
+    // Check legacy global key (no user_email) — return '' to indicate "all users"
+    const legacy = db.prepare("SELECT value FROM settings WHERE key = 'unified_api_key'").get();
+    if (legacy?.value === apiKey)
+        return '';
+    return null;
+}
+export function ensureUserUnifiedKey(userEmail) {
+    const db = getDb();
+    const settingKey = userKeySetting(userEmail);
+    const existing = db.prepare("SELECT value FROM settings WHERE key = ? AND user_email = ?")
+        .get(settingKey, userEmail);
+    if (existing)
+        return existing.value;
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
-    db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
-    // Mirror to Supabase so the regenerated key survives Vercel cold starts.
-    // The unified_api_key is the only thing standing between a user and their
-    // /v1/chat/completions traffic, so persistence here is critical.
+    db.prepare("INSERT INTO settings (key, user_email, value) VALUES (?, ?, ?)").run(settingKey, userEmail, key);
+    console.log(`[db] Generated unified API key for ${userEmail}: ${key}`);
     getPersistence().enqueueWrite(async () => {
         const { getSupabaseAdmin } = await import('./supabase.js');
         const sb = getSupabaseAdmin();
         if (!sb)
             return;
-        const { error } = await sb.from('settings').upsert({ key: 'unified_api_key', value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        const { error } = await sb.from('settings').upsert({ key: settingKey, user_email: userEmail, value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        if (error)
+            throw new Error(`settings upsert (unified key init): ${error.message}`);
+    }, `settings:unified_api_key:init:${userEmail}`);
+    return key;
+}
+export function regenerateUnifiedKey(userEmail) {
+    const db = getDb();
+    const settingKey = userKeySetting(userEmail);
+    const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
+    db.prepare(`
+    INSERT INTO settings (key, user_email, value) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(settingKey, userEmail, key);
+    getPersistence().enqueueWrite(async () => {
+        const { getSupabaseAdmin } = await import('./supabase.js');
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        const { error } = await sb.from('settings').upsert({ key: settingKey, user_email: userEmail, value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
         if (error)
             throw new Error(`settings upsert: ${error.message}`);
-    }, 'settings:unified_api_key');
+    }, `settings:unified_api_key:${userEmail}`);
     return key;
 }
 // Generic key/value settings accessors (used by routing strategy, etc.).
+// Routing strategy is global (not per-user).
 export function getSetting(key) {
     const db = getDb();
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -1406,7 +1483,7 @@ export function getSetting(key) {
 export function setSetting(key, value) {
     const db = getDb();
     db.prepare(`
-    INSERT INTO settings (key, value) VALUES (?, ?)
+    INSERT INTO settings (key, user_email, value) VALUES (?, '', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
     // Mirror to Supabase. Settings include the routing strategy choice; losing
@@ -1416,7 +1493,7 @@ export function setSetting(key, value) {
         const sb = getSupabaseAdmin();
         if (!sb)
             return;
-        const { error } = await sb.from('settings').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        const { error } = await sb.from('settings').upsert({ key, user_email: '', value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
         if (error)
             throw new Error(`settings upsert: ${error.message}`);
     }, `settings:${key}`);

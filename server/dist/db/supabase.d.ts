@@ -1,8 +1,13 @@
 export declare function getSupabaseClient(): any;
 export declare function getSupabaseAdmin(): any;
 /**
+ * Verify the admin client can actually reach Supabase.
+ * Called once at startup after env vars are loaded.
+ */
+export declare function verifySupabaseConnection(): Promise<boolean>;
+/**
  * Initialize Supabase database connection
- * Currently not used - returns null as better-sqlite3 is the default
+ * Currently not used — returns null as better-sqlite3 is the default
  */
 export declare function initDb(): Promise<null>;
 /**
