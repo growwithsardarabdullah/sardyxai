@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { getDb } from '../db/index.js';
+import { getDb, getPersistence } from '../db/index.js';
 import { getAllPenalties, getRoutingScores, getRoutingStrategy, setRoutingStrategy } from '../services/router.js';
 import { BANDIT_PRESETS } from '../services/scoring.js';
 import { parseBudget } from '../lib/budget.js';
+import { getSupabaseAdmin } from '../db/supabase.js';
 export const fallbackRouter = Router();
 // ── Bandit routing strategy ─────────────────────────────────────────────────
 // GET  /routing → active strategy, preset weights, and the per-model score
@@ -86,12 +87,39 @@ fallbackRouter.put('/', (req, res) => {
     const update = db.prepare(`
     UPDATE fallback_config SET priority = ?, enabled = ? WHERE model_db_id = ?
   `);
+    // Snapshot the affected (model_db_id → platform+model_id) map BEFORE the
+    // update so we can resolve them on the Supabase side.
+    const modelKeys = parsed.data.map(e => {
+        const row = db.prepare('SELECT platform, model_id FROM models WHERE id = ?').get(e.modelDbId);
+        return row ? { ...e, platform: row.platform, modelId: row.model_id } : null;
+    }).filter((x) => x !== null);
     const updateAll = db.transaction(() => {
         for (const entry of parsed.data) {
             update.run(entry.priority, entry.enabled ? 1 : 0, entry.modelDbId);
         }
     });
     updateAll();
+    // Mirror to Supabase. Each (platform, model_id) gets its own row update.
+    // Best-effort: if any individual update fails, the worker logs and moves on.
+    for (const entry of modelKeys) {
+        getPersistence().enqueueWrite(async () => {
+            const sb = getSupabaseAdmin();
+            if (!sb)
+                return;
+            const { data: m } = await sb.from('models')
+                .select('id')
+                .eq('platform', entry.platform)
+                .eq('model_id', entry.modelId)
+                .single();
+            if (!m)
+                return; // model not in mirror yet; cold-start will reconcile
+            const { error } = await sb.from('fallback_config')
+                .update({ priority: entry.priority, enabled: entry.enabled })
+                .eq('model_db_id', m.id);
+            if (error)
+                throw new Error(`fallback_config update: ${error.message}`);
+        }, `fallback_config:update:${entry.modelDbId}`);
+    }
     res.json({ success: true });
 });
 // `intelligence_rank` is scoped to each provider's own catalog — a provider's
@@ -115,7 +143,7 @@ fallbackRouter.post('/sort/:preset', (req, res) => {
         return;
     }
     const db = getDb();
-    const models = db.prepare(`SELECT m.id FROM models m ORDER BY ${orderBy}`).all();
+    const models = db.prepare(`SELECT m.id, m.platform, m.model_id FROM models m ORDER BY ${orderBy}`).all();
     const update = db.prepare('UPDATE fallback_config SET priority = ? WHERE model_db_id = ?');
     const reorder = db.transaction(() => {
         for (let i = 0; i < models.length; i++) {
@@ -123,6 +151,35 @@ fallbackRouter.post('/sort/:preset', (req, res) => {
         }
     });
     reorder();
+    // Mirror the full reorder. One job for the whole batch — the worker keeps
+    // the queue tight on bulk operations like a sort preset.
+    const sorted = models.map((m, i) => ({ platform: m.platform, modelId: m.model_id, priority: i + 1 }));
+    getPersistence().enqueueWrite(async () => {
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        // Fetch all Supabase model ids in one query for the affected platforms.
+        const platforms = [...new Set(sorted.map(s => s.platform))];
+        const { data: sbModels, error: mErr } = await sb.from('models')
+            .select('id, platform, model_id')
+            .in('platform', platforms);
+        if (mErr)
+            throw new Error(`models list: ${mErr.message}`);
+        const idMap = new Map();
+        for (const m of sbModels ?? []) {
+            idMap.set(`${m.platform}::${m.model_id}`, m.id);
+        }
+        for (const entry of sorted) {
+            const supabaseId = idMap.get(`${entry.platform}::${entry.modelId}`);
+            if (!supabaseId)
+                continue;
+            const { error } = await sb.from('fallback_config')
+                .update({ priority: entry.priority })
+                .eq('model_db_id', supabaseId);
+            if (error)
+                throw new Error(`fallback_config reorder: ${error.message}`);
+        }
+    }, `fallback_config:reorder:${preset}`);
     res.json({ success: true, preset });
 });
 // Token usage per model for the stacked bar

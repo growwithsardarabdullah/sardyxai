@@ -1,10 +1,10 @@
 import './env.js';
 import { createApp } from './app.js';
-import { initDb } from './db/index.js';
+import { initDbAsync } from './db/index.js';
 import { startHealthChecker } from './services/health.js';
 const PORT = process.env.PORT ?? 3001;
 async function main() {
-    initDb();
+    await initDbAsync();
     const app = createApp();
     app.listen(Number(PORT), '0.0.0.0', () => {
         console.log(`Server running on http://0.0.0.0:${PORT}`);

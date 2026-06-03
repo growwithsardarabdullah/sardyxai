@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { getDb } from '../db/index.js';
+import { getDb, getPersistence } from '../db/index.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
+import { getSupabaseAdmin } from '../db/supabase.js';
 export const keysRouter = Router();
 // Active providers — must match providers/index.ts registrations + shared/types.ts Platform.
 // Moonshot and MiniMax direct integrations were dropped in V4. HuggingFace
@@ -92,6 +93,19 @@ keysRouter.post('/', (req, res) => {
   `).run(platform, label ?? '', encrypted, iv, authTag);
     const newId = Number(result.lastInsertRowid);
     console.log(`[keys] POST / platform=${platform} label='${label ?? ''}' keyLen=${key.length} → id=${newId} (encrypt round-trip OK)`);
+    // Mirror to Supabase so the key survives a Vercel cold start. Local rowid
+    // is irrelevant on the Supabase side; we let it auto-assign.
+    getPersistence().enqueueWrite(async () => {
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        const { error } = await sb.from('api_keys').insert({
+            platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
+            status: 'unknown', enabled: true,
+        });
+        if (error)
+            throw new Error(`api_keys insert: ${error.message}`);
+    }, `api_keys:insert:${newId}`);
     res.status(201).json({
         id: newId,
         platform,
@@ -130,14 +144,25 @@ keysRouter.post('/custom', (req, res) => {
         // update its base_url/key when re-submitted.
         const existing = db.prepare("SELECT id FROM api_keys WHERE platform = 'custom' LIMIT 1").get();
         let keyId;
+        let upsertMode = 'insert';
+        let encrypted = '';
+        let iv = '';
+        let authTag = '';
         if (existing) {
-            const { encrypted, iv, authTag } = encrypt(rawKey);
+            const enc = encrypt(rawKey);
+            encrypted = enc.encrypted;
+            iv = enc.iv;
+            authTag = enc.authTag;
             db.prepare("UPDATE api_keys SET base_url = ?, encrypted_key = ?, iv = ?, auth_tag = ?, status = 'unknown', enabled = 1 WHERE id = ?")
                 .run(baseUrl, encrypted, iv, authTag, existing.id);
             keyId = existing.id;
+            upsertMode = 'update';
         }
         else {
-            const { encrypted, iv, authTag } = encrypt(rawKey);
+            const enc = encrypt(rawKey);
+            encrypted = enc.encrypted;
+            iv = enc.iv;
+            authTag = enc.authTag;
             const r = db.prepare(`
         INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
         VALUES ('custom', ?, ?, ?, ?, 'unknown', 1, ?)
@@ -155,13 +180,65 @@ keysRouter.post('/custom', (req, res) => {
         const modelRow = db.prepare("SELECT id FROM models WHERE platform = 'custom' AND model_id = ?").get(modelId);
         // Append to the fallback chain if not already present.
         const inChain = db.prepare('SELECT 1 FROM fallback_config WHERE model_db_id = ?').get(modelRow.id);
+        let fallbackInserted = false;
         if (!inChain) {
             const max = db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM fallback_config').get();
             db.prepare('INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, ?, 1)').run(modelRow.id, max.m + 1);
+            fallbackInserted = true;
         }
-        return { keyId, modelDbId: modelRow.id };
+        return { keyId, modelDbId: modelRow.id, upsertMode, encrypted, iv, authTag, fallbackInserted };
     });
-    const { keyId, modelDbId } = upsert();
+    const { keyId, modelDbId, upsertMode, encrypted, iv, authTag, fallbackInserted } = upsert();
+    // Mirror custom provider state to Supabase. Custom keys can be re-submitted,
+    // so we don't know if this was a fresh insert or an update — branch on
+    // upsertMode to issue the right RPC.
+    getPersistence().enqueueWrite(async () => {
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        if (upsertMode === 'insert') {
+            const { error } = await sb.from('api_keys').insert({
+                platform: 'custom', label, encrypted_key: encrypted, iv, auth_tag: authTag,
+                status: 'unknown', enabled: true, base_url: baseUrl,
+            });
+            if (error)
+                throw new Error(`api_keys insert: ${error.message}`);
+        }
+        else {
+            // Match by platform='custom' AND base_url — there's only ever one custom
+            // key row per endpoint, and re-submission updates it in place.
+            const { error } = await sb.from('api_keys')
+                .update({
+                encrypted_key: encrypted, iv, auth_tag: authTag,
+                status: 'unknown', enabled: true, base_url: baseUrl,
+            })
+                .eq('platform', 'custom')
+                .eq('base_url', baseUrl);
+            if (error)
+                throw new Error(`api_keys update: ${error.message}`);
+        }
+    }, `api_keys:custom:${upsertMode}`);
+    if (fallbackInserted) {
+        // Custom model appended to the chain — mirror to Supabase. The Supabase
+        // fallback_config.model_db_id differs from the local one, so we look it
+        // up by (platform, model_id) and let the resolver handle the ID remap.
+        getPersistence().enqueueWrite(async () => {
+            const sb = getSupabaseAdmin();
+            if (!sb)
+                return;
+            const { data: m } = await sb.from('models')
+                .select('id')
+                .eq('platform', 'custom')
+                .eq('model_id', modelId)
+                .single();
+            if (!m)
+                return; // mirror wasn't run yet (race); next cold start will reconcile
+            const localPriority = db.prepare('SELECT priority FROM fallback_config WHERE model_db_id = ?').get(modelDbId).priority;
+            const { error } = await sb.from('fallback_config').upsert({ model_db_id: m.id, priority: localPriority, enabled: true }, { onConflict: 'model_db_id' });
+            if (error)
+                throw new Error(`fallback_config upsert: ${error.message}`);
+        }, `fallback_config:insert:${modelDbId}`);
+    }
     res.status(201).json({
         success: true,
         keyId,
@@ -181,10 +258,26 @@ keysRouter.delete('/:id', (req, res) => {
         return;
     }
     const db = getDb();
+    // Capture the row's identifying fields BEFORE deletion so we can match it
+    // on the Supabase side (where the local rowid is meaningless).
+    const row = db.prepare('SELECT platform, label FROM api_keys WHERE id = ?').get(id);
     const result = db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
     if (result.changes === 0) {
         res.status(404).json({ error: { message: 'Key not found' } });
         return;
+    }
+    if (row) {
+        getPersistence().enqueueWrite(async () => {
+            const sb = getSupabaseAdmin();
+            if (!sb)
+                return;
+            const { error } = await sb.from('api_keys')
+                .delete()
+                .eq('platform', row.platform)
+                .eq('label', row.label);
+            if (error)
+                throw new Error(`api_keys delete: ${error.message}`);
+        }, `api_keys:delete:${id}`);
     }
     res.json({ success: true });
 });
@@ -202,6 +295,19 @@ keysRouter.patch('/platform/:platform', (req, res) => {
     }
     const db = getDb();
     const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ?').run(enabled ? 1 : 0, platform);
+    // Mirror platform-wide enable/disable. The Supabase mirror uses the same
+    // platform filter; we don't know which rows changed but the result is the
+    // same — every key for this platform ends up at the new value.
+    getPersistence().enqueueWrite(async () => {
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        const { error } = await sb.from('api_keys')
+            .update({ enabled })
+            .eq('platform', platform);
+        if (error)
+            throw new Error(`api_keys platform-update: ${error.message}`);
+    }, `api_keys:platform:${platform}`);
     res.json({ success: true, enabled, updatedKeys: result.changes });
 });
 // Update key (toggle enable/disable or edit label)
@@ -233,6 +339,27 @@ keysRouter.patch('/:id', (req, res) => {
     if (result.changes === 0) {
         res.status(404).json({ error: { message: 'Key not found' } });
         return;
+    }
+    // Mirror individual update. Capture (platform, oldLabel) before the update
+    // so we can match the row on Supabase.
+    const oldRow = db.prepare('SELECT platform, label FROM api_keys WHERE id = ?').get(id);
+    if (oldRow) {
+        const updatePayload = {};
+        if (enabled !== undefined)
+            updatePayload.enabled = enabled;
+        if (label !== undefined)
+            updatePayload.label = label;
+        getPersistence().enqueueWrite(async () => {
+            const sb = getSupabaseAdmin();
+            if (!sb)
+                return;
+            const { error } = await sb.from('api_keys')
+                .update(updatePayload)
+                .eq('platform', oldRow.platform)
+                .eq('label', oldRow.label);
+            if (error)
+                throw new Error(`api_keys update: ${error.message}`);
+        }, `api_keys:update:${id}`);
     }
     const response = { success: true };
     if (enabled !== undefined)

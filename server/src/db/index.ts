@@ -4,6 +4,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
+import { createPersistence, type PersistenceHandle } from './persistence.js';
+
+let persistence: PersistenceHandle | null = null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use /tmp for Vercel serverless (ephemeral), or local data/ for development
@@ -28,7 +31,7 @@ export function initDb(dbPath?: string): Database.Database {
     if (!isMemory) {
       const dataDir = path.dirname(resolvedPath);
       console.log('[db] Initializing database at:', resolvedPath);
-      
+
       if (!fs.existsSync(dataDir)) {
         console.log('[db] Creating directory:', dataDir);
         fs.mkdirSync(dataDir, { recursive: true });
@@ -37,7 +40,7 @@ export function initDb(dbPath?: string): Database.Database {
 
     console.log('[db] Opening database...');
     db = new Database(resolvedPath);
-    
+
     if (!isMemory) db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
 
@@ -71,6 +74,27 @@ export function initDb(dbPath?: string): Database.Database {
     console.error('[db] Initialization failed:', error);
     throw error;
   }
+}
+
+/**
+ * Async variant of initDb. After opening the in-memory SQLite and running all
+ * seed/migration code, awaits Supabase hydration if credentials are configured.
+ * Use this in production entry points (Vercel handler, local server boot).
+ * Tests keep using initDb() (sync, no Supabase) so the test env stays offline.
+ */
+export async function initDbAsync(dbPath?: string): Promise<Database.Database> {
+  const handle = initDb(dbPath);
+  if (!persistence) persistence = createPersistence();
+  if (persistence.isSupabase) {
+    await persistence.hydrateIfNeeded();
+  }
+  return handle;
+}
+
+/** Accessor for the write-through persistence handle. Lazy-inits on first call. */
+export function getPersistence(): PersistenceHandle {
+  if (!persistence) persistence = createPersistence();
+  return persistence;
 }
 
 function createTables(db: Database.Database) {
@@ -1414,6 +1438,19 @@ export function regenerateUnifiedKey(): string {
   const db = getDb();
   const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
   db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
+  // Mirror to Supabase so the regenerated key survives Vercel cold starts.
+  // The unified_api_key is the only thing standing between a user and their
+  // /v1/chat/completions traffic, so persistence here is critical.
+  getPersistence().enqueueWrite(async () => {
+    const { getSupabaseAdmin } = await import('./supabase.js');
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const { error } = await sb.from('settings').upsert(
+      { key: 'unified_api_key', value: key, updated_at: new Date().toISOString() },
+      { onConflict: 'key' },
+    );
+    if (error) throw new Error(`settings upsert: ${error.message}`);
+  }, 'settings:unified_api_key');
   return key;
 }
 
@@ -1430,4 +1467,16 @@ export function setSetting(key: string, value: string): void {
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
+  // Mirror to Supabase. Settings include the routing strategy choice; losing
+  // it on a cold start would surprise the user (their routing preset resets).
+  getPersistence().enqueueWrite(async () => {
+    const { getSupabaseAdmin } = await import('./supabase.js');
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const { error } = await sb.from('settings').upsert(
+      { key, value, updated_at: new Date().toISOString() },
+      { onConflict: 'key' },
+    );
+    if (error) throw new Error(`settings upsert: ${error.message}`);
+  }, `settings:${key}`);
 }

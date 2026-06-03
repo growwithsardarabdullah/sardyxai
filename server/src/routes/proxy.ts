@@ -5,7 +5,8 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
-import { getDb, getUnifiedApiKey } from '../db/index.js';
+import { getDb, getUnifiedApiKey, getPersistence } from '../db/index.js';
+import { getSupabaseAdmin } from '../db/supabase.js';
 import { contentToString, messageHasImage } from '../lib/content.js';
 
 export const proxyRouter = Router();
@@ -545,5 +546,40 @@ export function logRequest(
     `).run(platform, modelId, keyId, status, inputTokens, outputTokens, latencyMs, error, ttfbMs);
   } catch (e) {
     console.error('Failed to log request:', e);
+    return;
   }
+  // Mirror to Supabase. The local keyId is meaningless on the Supabase side —
+  // we resolve it by (platform, label) and pass the Supabase id. If we can't
+  // resolve (e.g. cold start before hydration), we send null.
+  getPersistence().enqueueWrite(async () => {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    let supabaseKeyId: number | null = null;
+    if (keyId) {
+      const localKey = getDb().prepare(
+        'SELECT platform, label FROM api_keys WHERE id = ?',
+      ).get(keyId) as { platform: string; label: string } | undefined;
+      if (localKey) {
+        const { data } = await sb.from('api_keys')
+          .select('id')
+          .eq('platform', localKey.platform)
+          .eq('label', localKey.label)
+          .limit(1)
+          .single();
+        supabaseKeyId = data?.id ?? null;
+      }
+    }
+    const { error: insErr } = await sb.from('requests').insert({
+      platform,
+      model_id: modelId,
+      key_id: supabaseKeyId,
+      status,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      latency_ms: latencyMs,
+      ttfb_ms: ttfbMs,
+      error,
+    });
+    if (insErr) throw new Error(`requests insert: ${insErr.message}`);
+  }, `requests:${platform}:${status}`);
 }

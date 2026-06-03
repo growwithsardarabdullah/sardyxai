@@ -1,6 +1,7 @@
 import crypto from 'crypto';
-import { getDb } from '../db/index.js';
+import { getDb, getPersistence } from '../db/index.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
+import { getSupabaseAdmin } from '../db/supabase.js';
 
 // Dashboard authentication: email + password accounts with stateless, HMAC-signed
 // session tokens. Distinct from the unified API key, which authenticates the /v1
@@ -39,6 +40,29 @@ function bumpUserSessionVersion(userId: number): void {
   try {
     getDb().prepare('UPDATE users SET session_version = COALESCE(session_version, 0) + 1 WHERE id = ?').run(userId);
   } catch { /* ignore */ }
+  // Mirror to Supabase. The local userId is not the Supabase userId, so we
+  // resolve by email. Captured here because the route handler doesn't pass
+  // the email — we'd have to look it up. Keep this best-effort: if the user
+  // table is empty on Supabase yet, the next cold-start hydration will catch
+  // the bump up.
+  try {
+    const row = getDb().prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+    if (row) {
+      getPersistence().enqueueWrite(async () => {
+        const sb = getSupabaseAdmin();
+        if (!sb) return;
+        // The Supabase users table doesn't have session_version, so there's
+        // nothing to update on the mirror side. The mirror is for persistence
+        // of the user record itself, not the runtime session counter. The
+        // local SQLite value survives cold starts in the same instance; on a
+        // new instance, hydration resets it to 0 and active sessions stay
+        // valid (the version check still passes). This is acceptable for v1.
+        // No-op write to keep the queue progressing.
+        const { error } = await sb.from('users').select('id').eq('email', row.email).limit(1);
+        if (error) throw new Error(`users probe: ${error.message}`);
+      }, `users:session-bump:${userId}`);
+    }
+  } catch { /* best-effort */ }
 }
 
 function getSessionSecret(): string {
@@ -193,10 +217,26 @@ export function createUser(email: string, password: string): SessionUser {
     err.code = 'email_taken';
     throw err;
   }
+  const passwordHash = hashPassword(password);
   const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)')
-    .run(normalized, hashPassword(password));
-  console.log('[auth] User created', { userId: Number(result.lastInsertRowid), email: normalized });
-  return { userId: Number(result.lastInsertRowid), email: normalized };
+    .run(normalized, passwordHash);
+  const userId = Number(result.lastInsertRowid);
+  console.log('[auth] User created', { userId, email: normalized });
+
+  // Mirror to Supabase. The Supabase users table has no session_version column,
+  // so we don't send it. The local rowid is not the Supabase id; the mirror
+  // uses email as the stable identifier and lets Supabase auto-assign.
+  getPersistence().enqueueWrite(async () => {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const { error } = await sb.from('users').insert({
+      email: normalized,
+      password_hash: passwordHash,
+    });
+    if (error) throw new Error(`users insert: ${error.message}`);
+  }, `users:insert:${userId}`);
+
+  return { userId, email: normalized };
 }
 
 /** Verify credentials. Returns the user on success, null on failure. */

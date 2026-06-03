@@ -5,7 +5,7 @@ import '../server/dist/env.js';
 
 // Import from compiled server build
 import { createApp } from '../server/dist/app.js';
-import { initDb } from '../server/dist/db/index.js';
+import { initDbAsync } from '../server/dist/db/index.js';
 import { startHealthChecker } from '../server/dist/services/health.js';
 
 // Initialize database once on cold start
@@ -16,20 +16,24 @@ let initError: Error | null = null;
 async function initializeApp() {
   if (initialized) return;
   if (initError) throw initError;
-  
+
   try {
     console.log('[Vercel] Starting initialization...');
     console.log('[Vercel] NODE_ENV:', process.env.NODE_ENV);
-    
-    initDb();
+
+    // initDbAsync opens the in-memory SQLite (seeded + migrated) and then
+    // awaits Supabase hydration if credentials are configured. The first
+    // request waits for this — subsequent requests are unblocked because
+    // `initialized` short-circuits.
+    await initDbAsync();
     console.log('[Vercel] Database initialized');
-    
+
     app = createApp();
     console.log('[Vercel] Express app created');
-    
+
     startHealthChecker();
     console.log('[Vercel] Health checker started');
-    
+
     initialized = true;
     console.log('[Vercel] App initialized successfully');
   } catch (error) {

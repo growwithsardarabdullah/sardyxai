@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
+import { createPersistence } from './persistence.js';
+let persistence = null;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use /tmp for Vercel serverless (ephemeral), or local data/ for development
 const DB_PATH = process.env.NODE_ENV === 'production'
@@ -63,6 +65,27 @@ export function initDb(dbPath) {
         console.error('[db] Initialization failed:', error);
         throw error;
     }
+}
+/**
+ * Async variant of initDb. After opening the in-memory SQLite and running all
+ * seed/migration code, awaits Supabase hydration if credentials are configured.
+ * Use this in production entry points (Vercel handler, local server boot).
+ * Tests keep using initDb() (sync, no Supabase) so the test env stays offline.
+ */
+export async function initDbAsync(dbPath) {
+    const handle = initDb(dbPath);
+    if (!persistence)
+        persistence = createPersistence();
+    if (persistence.isSupabase) {
+        await persistence.hydrateIfNeeded();
+    }
+    return handle;
+}
+/** Accessor for the write-through persistence handle. Lazy-inits on first call. */
+export function getPersistence() {
+    if (!persistence)
+        persistence = createPersistence();
+    return persistence;
 }
 function createTables(db) {
     db.exec(`
@@ -1347,6 +1370,18 @@ export function regenerateUnifiedKey() {
     const db = getDb();
     const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
     db.prepare("UPDATE settings SET value = ? WHERE key = 'unified_api_key'").run(key);
+    // Mirror to Supabase so the regenerated key survives Vercel cold starts.
+    // The unified_api_key is the only thing standing between a user and their
+    // /v1/chat/completions traffic, so persistence here is critical.
+    getPersistence().enqueueWrite(async () => {
+        const { getSupabaseAdmin } = await import('./supabase.js');
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        const { error } = await sb.from('settings').upsert({ key: 'unified_api_key', value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        if (error)
+            throw new Error(`settings upsert: ${error.message}`);
+    }, 'settings:unified_api_key');
     return key;
 }
 // Generic key/value settings accessors (used by routing strategy, etc.).
@@ -1361,5 +1396,16 @@ export function setSetting(key, value) {
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(key, value);
+    // Mirror to Supabase. Settings include the routing strategy choice; losing
+    // it on a cold start would surprise the user (their routing preset resets).
+    getPersistence().enqueueWrite(async () => {
+        const { getSupabaseAdmin } = await import('./supabase.js');
+        const sb = getSupabaseAdmin();
+        if (!sb)
+            return;
+        const { error } = await sb.from('settings').upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        if (error)
+            throw new Error(`settings upsert: ${error.message}`);
+    }, `settings:${key}`);
 }
 //# sourceMappingURL=index.js.map

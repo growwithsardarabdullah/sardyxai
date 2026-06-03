@@ -1,6 +1,7 @@
-import { getDb } from '../db/index.js';
+import { getDb, getPersistence } from '../db/index.js';
 import { resolveProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
+import { getSupabaseAdmin } from '../db/supabase.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -25,6 +26,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 
     db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run(status, keyId);
+    mirrorKeyHealthUpdate(row.platform, row.label, status, false);
 
     if (isValid) {
       failureCount.delete(keyId);
@@ -34,6 +36,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 
       if (count >= CONSECUTIVE_FAILURES_TO_DISABLE) {
         db.prepare('UPDATE api_keys SET enabled = 0 WHERE id = ?').run(keyId);
+        mirrorKeyHealthUpdate(row.platform, row.label, status, true);
         console.log(`[Health] Auto-disabled key ${keyId} after ${count} consecutive failures`);
       }
     }
@@ -46,8 +49,24 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     console.error(`[Health] Key ${keyId} transport error:`, err.message);
     db.prepare("UPDATE api_keys SET status = ?, last_checked_at = datetime('now') WHERE id = ?")
       .run('error', keyId);
+    mirrorKeyHealthUpdate(row.platform, row.label, 'error', false);
     return 'error';
   }
+}
+
+function mirrorKeyHealthUpdate(platform: string, label: string, status: string, disabled: boolean): void {
+  getPersistence().enqueueWrite(async () => {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const payload: Record<string, unknown> = {
+      status,
+      last_checked_at: new Date().toISOString(),
+    };
+    if (disabled) payload.enabled = false;
+    const { error } = await sb.from('api_keys').update(payload)
+      .eq('platform', platform).eq('label', label);
+    if (error) throw new Error(`api_keys health update: ${error.message}`);
+  }, `api_keys:health:${platform}`);
 }
 
 export async function checkAllKeys(): Promise<void> {
