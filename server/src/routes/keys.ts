@@ -32,14 +32,18 @@ const updateKeySchema = z.object({
 keysRouter.get('/', (_req: Request, res: Response) => {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
+  console.log(`[keys] GET / → ${rows.length} key(s) in storage`);
 
   const keys = rows.map(row => {
     let maskedKey = '****';
+    let decryptOk = false;
     try {
       const realKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
       maskedKey = maskKey(realKey);
-    } catch {
+      decryptOk = true;
+    } catch (err) {
       maskedKey = '[decrypt failed]';
+      console.error(`[keys] DECRYPT FAILED for id=${row.id} platform=${row.platform}: ${(err as Error).message}`);
     }
     return {
       id: row.id,
@@ -51,9 +55,14 @@ keysRouter.get('/', (_req: Request, res: Response) => {
       enabled: row.enabled === 1,
       createdAt: row.created_at,
       lastCheckedAt: row.last_checked_at,
+      _decryptOk: decryptOk,
     };
   });
 
+  const failedCount = keys.filter(k => !k._decryptOk).length;
+  if (failedCount > 0) {
+    console.warn(`[keys] ${failedCount}/${keys.length} key(s) FAILED to decrypt — likely an ENCRYPTION_KEY drift. Re-add these keys.`);
+  }
   res.json(keys);
 });
 
@@ -66,7 +75,23 @@ keysRouter.post('/', (req: Request, res: Response) => {
   }
 
   const { platform, key, label } = parsed.data;
-  const { encrypted, iv, authTag } = encrypt(key);
+
+  // Sanity check: try encrypt → decrypt round-trip so we fail fast on a broken
+  // encryption key (e.g. ENCRYPTION_KEY changed mid-deployment) rather than
+  // letting the user discover it via "API key not valid" from the provider.
+  let encrypted: string, iv: string, authTag: string;
+  try {
+    const enc = encrypt(key);
+    encrypted = enc.encrypted; iv = enc.iv; authTag = enc.authTag;
+    const roundTrip = decrypt(encrypted, iv, authTag);
+    if (roundTrip !== key) {
+      throw new Error('Round-trip decrypt produced a different value than the input');
+    }
+  } catch (err) {
+    console.error(`[keys] ENCRYPT round-trip FAILED for platform=${platform}: ${(err as Error).message}`);
+    res.status(500).json({ error: { message: 'Failed to encrypt key. Check server ENCRYPTION_KEY configuration.', type: 'encryption_error' } });
+    return;
+  }
 
   const db = getDb();
   const result = db.prepare(`
@@ -74,8 +99,11 @@ keysRouter.post('/', (req: Request, res: Response) => {
     VALUES (?, ?, ?, ?, ?, 'unknown', 1)
   `).run(platform, label ?? '', encrypted, iv, authTag);
 
+  const newId = Number(result.lastInsertRowid);
+  console.log(`[keys] POST / platform=${platform} label='${label ?? ''}' keyLen=${key.length} → id=${newId} (encrypt round-trip OK)`);
+
   res.status(201).json({
-    id: result.lastInsertRowid,
+    id: newId,
     platform,
     label: label ?? '',
     maskedKey: maskKey(key),

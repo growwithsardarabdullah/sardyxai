@@ -412,7 +412,9 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
       let decryptedKey: string;
       try {
         decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
-      } catch {
+        console.log(`[router] Key loaded: platform=${entry.platform} model=${entry.model_id} keyId=${key.id} (decrypt OK, keyLen=${decryptedKey.length})`);
+      } catch (err) {
+        console.error(`[router] DECRYPT FAILED for platform=${entry.platform} keyId=${key.id}: ${(err as Error).message}. Marking key as 'error'.`);
         db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
           .run(key.id);
         continue;

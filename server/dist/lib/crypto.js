@@ -18,11 +18,27 @@ function parseHexKey(value, source) {
     }
     return Buffer.from(value, 'hex');
 }
+// Stable, per-deployment key source. On Vercel, /tmp is wiped on every cold
+// start so we cannot rely on a DB-stored key being there. We derive a
+// deployment-stable key from the VERCEL_DEPLOYMENT_ID (stable for the lifetime
+// of one deployment) or VERCEL_PROJECT_PRODUCTION_URL (stable per-project).
+// This means keys encrypted by THIS deployment are decryptable by THIS
+// deployment, even after a cold start. After a redeploy, the SHA changes and
+// previously-encrypted keys become undecryptable — but the user will be
+// re-adding keys anyway after a redeploy.
+function getVercelStableKeySource() {
+    return process.env.VERCEL_DEPLOYMENT_ID
+        || process.env.VERCEL_GIT_COMMIT_SHA
+        || process.env.VERCEL_PROJECT_PRODUCTION_URL
+        || process.env.VERCEL_URL
+        || null;
+}
 // Outside production we auto-generate and persist a key so a fresh clone
 // (`npm run dev`) boots without manual setup — the placeholder ENCRYPTION_KEY
 // in .env.example would otherwise crash the server on boot, which surfaces in
 // the client as "Can't reach the server". 
-// On Vercel (ephemeral storage), we also allow fallback since data doesn't persist anyway.
+// On Vercel, we derive a stable key from deployment metadata so previously-
+// encrypted API keys remain decryptable across cold starts.
 function isDevFallbackAllowed() {
     const isVercel = !!process.env.VERCEL;
     return process.env.NODE_ENV !== 'production' || isVercel;
@@ -36,28 +52,52 @@ function missingKeyError() {
 /**
  * Initialize encryption key from env or an explicit local-dev fallback.
  * Must be called after DB is initialized.
+ *
+ * Resolution order:
+ *   1. ENCRYPTION_KEY env var (recommended for production)
+ *   2. Vercel deployment metadata (stable per deployment on Vercel)
+ *   3. DB-stored key (dev/single-process only; lost on Vercel cold start)
+ *   4. Generate and persist to DB (dev only)
  */
 export function initEncryptionKey(db) {
-    // 1. Check env var
+    // 1. Check explicit env var (always wins)
     const envKey = process.env.ENCRYPTION_KEY;
     if (envKey && envKey !== PLACEHOLDER_KEY) {
         cachedKey = parseHexKey(envKey, 'env');
+        console.log('[crypto] Using ENCRYPTION_KEY from env var');
         return;
     }
     if (!isDevFallbackAllowed()) {
         throw missingKeyError();
     }
-    // 2. Check DB for persisted key
+    // 2. Vercel deployment metadata — stable per cold-start of same deploy
+    const vercelKeySource = getVercelStableKeySource();
+    if (vercelKeySource) {
+        const derived = crypto.createHash('sha256')
+            .update(`freellmapi-encryption-key:v1:${vercelKeySource}`)
+            .digest('hex');
+        cachedKey = parseHexKey(derived, 'env');
+        console.warn(`[crypto] No ENCRYPTION_KEY set — derived a STABLE key from Vercel metadata (${vercelKeySource.substring(0, 12)}...). This survives cold starts of THIS deployment but is LOST on redeploy. For long-term persistence, set ENCRYPTION_KEY in Vercel env vars.`);
+        return;
+    }
+    // 3. Check DB for persisted key (dev/single-process only)
     const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get();
     if (row) {
         cachedKey = parseHexKey(row.value, 'db');
         console.warn('[crypto] No ENCRYPTION_KEY set — using auto-generated key from the local DB (dev only).');
         return;
     }
-    // 3. Generate and persist
+    // 4. Generate and persist (dev only — will be lost on Vercel cold start)
     cachedKey = crypto.randomBytes(KEY_BYTES);
-    db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
-    console.warn('[crypto] No ENCRYPTION_KEY set — generated and persisted a local dev key. Set ENCRYPTION_KEY for production.');
+    try {
+        db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
+        console.warn('[crypto] No ENCRYPTION_KEY set — generated and persisted a local dev key. Set ENCRYPTION_KEY for production.');
+    }
+    catch {
+        // DB doesn't have a settings table (e.g. async Supabase backend not yet ready).
+        // The key is still in memory for this process, just not persisted.
+        console.warn('[crypto] No ENCRYPTION_KEY set — generated an in-memory key (DB persistence unavailable). Sessions/keys WILL be lost on restart.');
+    }
 }
 function getEncryptionKey() {
     if (!cachedKey) {

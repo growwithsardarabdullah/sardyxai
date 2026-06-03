@@ -35,15 +35,30 @@ function bumpUserSessionVersion(userId) {
 function getSessionSecret() {
     // Persistent secret. If SESSION_SECRET env var is set, use it. Otherwise derive
     // a stable secret from ENCRYPTION_KEY (which the user must already set in
-    // production) so the cookie stays valid across deploys. As a last resort fall
-    // back to a per-process random secret — this only works for the lifetime of a
-    // single Vercel instance, but keeps the app bootable in dev without setup.
+    // production) so the cookie stays valid across deploys. As a last resort, on
+    // Vercel we derive a deployment-stable secret from Vercel metadata so sessions
+    // survive cold starts of the same deployment.
     const explicit = process.env.SESSION_SECRET;
-    if (explicit && explicit.length >= 32)
+    if (explicit && explicit.length >= 32) {
+        console.log('[auth] Using SESSION_SECRET from env var');
         return explicit;
+    }
     const encKey = process.env.ENCRYPTION_KEY;
     if (encKey && encKey.length >= 32) {
         return crypto.createHash('sha256').update(`session:${encKey}`).digest('hex');
+    }
+    // Vercel fallback: derive a stable secret from deployment metadata so cookies
+    // survive cold starts. LOST on redeploy (a SHA change rotates the secret).
+    const vercelKeySource = process.env.VERCEL_DEPLOYMENT_ID
+        || process.env.VERCEL_GIT_COMMIT_SHA
+        || process.env.VERCEL_PROJECT_PRODUCTION_URL
+        || process.env.VERCEL_URL;
+    if (vercelKeySource) {
+        const derived = crypto.createHash('sha256')
+            .update(`freellmapi-session-secret:v1:${vercelKeySource}`)
+            .digest('hex');
+        console.warn(`[auth] No SESSION_SECRET/ENCRYPTION_KEY set — derived a STABLE secret from Vercel metadata (${vercelKeySource.substring(0, 12)}...). Survives cold starts of THIS deployment but is LOST on redeploy. For long-term persistence, set SESSION_SECRET in Vercel env vars.`);
+        return derived;
     }
     // Last-resort dev fallback. Logs a warning so it's obvious in deploy logs.
     if (!globalThis.__freellmapiDevSecret) {
