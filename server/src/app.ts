@@ -96,30 +96,63 @@ export function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Debug: persistence status (no auth required — shows booleans only, no secrets)
+  // Debug: persistence status + per-table Supabase test (no auth required)
   app.get('/api/debug/persistence', async (_req, res) => {
     const { getPersistence } = await import('./db/index.js');
     const { getSupabaseAdmin } = await import('./db/supabase.js');
     const persistence = getPersistence();
     const stats = persistence.stats();
     const sb = getSupabaseAdmin();
-    let supabaseTest: { ok: boolean; error?: string } = { ok: false };
+
+    const tables = ['users', 'api_keys', 'models', 'fallback_config', 'settings', 'sessions', 'requests'];
+    const tableTests: Record<string, { ok: boolean; count?: number; error?: string }> = {};
+
     if (sb) {
-      try {
-        const { error } = await sb.from('api_keys').select('id', { count: 'exact', head: true });
-        if (error) {
-          supabaseTest = { ok: false, error: `${error.message} (code: ${error.code})` };
-        } else {
-          supabaseTest = { ok: true };
+      for (const table of tables) {
+        try {
+          const { data, error, count } = await sb.from(table).select('id', { count: 'exact', head: true });
+          if (error) {
+            tableTests[table] = { ok: false, error: `${error.message} (code: ${error.code})` };
+          } else {
+            tableTests[table] = { ok: true, count: count ?? 0 };
+          }
+        } catch (err) {
+          tableTests[table] = { ok: false, error: (err as Error).message };
         }
-      } catch (err) {
-        supabaseTest = { ok: false, error: (err as Error).message };
       }
     }
+
+    // Also test a direct INSERT into api_keys to confirm writes work
+    let writeTest: { ok: boolean; error?: string } = { ok: false };
+    if (sb) {
+      try {
+        const { error } = await sb.from('api_keys').insert({
+          user_email: '__debug_test__',
+          platform: 'debug',
+          label: 'test',
+          encrypted_key: 'test',
+          iv: 'test',
+          auth_tag: 'test',
+          status: 'test',
+          enabled: false,
+        });
+        if (error) {
+          writeTest = { ok: false, error: `${error.message} (code: ${error.code})` };
+        } else {
+          // Clean up the test row
+          await sb.from('api_keys').delete().eq('user_email', '__debug_test__').eq('platform', 'debug');
+          writeTest = { ok: true };
+        }
+      } catch (err) {
+        writeTest = { ok: false, error: (err as Error).message };
+      }
+    }
+
     res.json({
       persistence: stats,
       supabaseAdminAvailable: !!sb,
-      supabaseTest,
+      tableTests,
+      writeTest,
       envVars: {
         SUPABASE_URL: !!process.env.SUPABASE_URL,
         SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,

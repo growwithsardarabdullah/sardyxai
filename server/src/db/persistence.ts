@@ -93,7 +93,8 @@ export function createPersistence(): PersistenceHandle {
         ]);
       } catch (err) {
         hydrated = false; // allow retry on next call
-        console.error(`[persistence] Hydration failed: ${(err as Error).message}. Continuing in offline mode.`);
+        console.error(`[persistence] Hydration FAILED: ${(err as Error).message}`);
+        console.error(`[persistence] Stack: ${(err as Error).stack}`);
       }
       // Always start the worker — even if hydration failed — so queued writes
       // can drain once Supabase becomes reachable again.
@@ -261,21 +262,14 @@ async function hydrateFromSupabase(supabase: SupabaseClient): Promise<void> {
   const fallback = (fallbackRes.data ?? []) as SupabaseFallback[];
   const settings = (settingsRes.data ?? []) as SupabaseSetting[];
 
-  if (usersRes.error) {
-    console.error(`[persistence] users SELECT failed: ${usersRes.error.message} (code: ${usersRes.error.code})`);
-    console.error(`[persistence] This usually means SUPABASE_SERVICE_ROLE_KEY is wrong or RLS is blocking the query`);
-  }
-  if (keysRes.error) {
-    console.error(`[persistence] api_keys SELECT failed: ${keysRes.error.message} (code: ${keysRes.error.code})`);
-  }
-  if (modelsRes.error) {
-    console.error(`[persistence] models SELECT failed: ${modelsRes.error.message} (code: ${modelsRes.error.code})`);
-  }
-  if (fallbackRes.error) {
-    console.error(`[persistence] fallback_config SELECT failed: ${fallbackRes.error.message} (code: ${fallbackRes.error.code})`);
-  }
-  if (settingsRes.error) {
-    console.error(`[persistence] settings SELECT failed: ${settingsRes.error.message} (code: ${settingsRes.error.code})`);
+  const errors: string[] = [];
+  if (usersRes.error) errors.push(`users: ${usersRes.error.message} (${usersRes.error.code})`);
+  if (keysRes.error) errors.push(`api_keys: ${keysRes.error.message} (${keysRes.error.code})`);
+  if (modelsRes.error) errors.push(`models: ${modelsRes.error.message} (${modelsRes.error.code})`);
+  if (fallbackRes.error) errors.push(`fallback_config: ${fallbackRes.error.message} (${fallbackRes.error.code})`);
+  if (settingsRes.error) errors.push(`settings: ${settingsRes.error.message} (${settingsRes.error.code})`);
+  if (errors.length > 0) {
+    console.error(`[persistence] Supabase query errors: ${errors.join('; ')}`);
   }
 
   console.log(`[persistence] Supabase returned: ${users.length} users, ${keys.length} api_keys, ${models.length} models, ${fallback.length} fallback, ${settings.length} settings`);
