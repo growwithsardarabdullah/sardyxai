@@ -19,15 +19,15 @@ function init() {
     }
     if (!SUPABASE_SERVICE_ROLE_KEY) {
         console.error('[supabase] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is not set! ' +
-            'All Supabase writes will be blocked by RLS. ' +
-            'Set SUPABASE_SERVICE_ROLE_KEY in your environment variables.');
-        // Still create the client so code doesn't crash, but it won't work for writes.
-        // We use ANON_KEY as a fallback so at least SELECT queries (which some RLS
-        // policies allow, e.g. models_public_read) will work.
+            'All Supabase writes will fail. ' +
+            'Set SUPABASE_SERVICE_ROLE_KEY in your Vercel environment variables.');
+        // Do NOT create admin client with anon key — anon CANNOT bypass RLS.
+        // supabaseAdmin stays null so writes fail LOUDLY, not silently.
+        // Public client (anon) is still created for reads on public tables (e.g. models).
         if (SUPABASE_ANON_KEY) {
-            supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-            supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-            console.warn('[supabase] Falling back to ANON_KEY — writes will fail, reads may work for public tables');
+            supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+                auth: { persistSession: false, autoRefreshToken: false },
+            });
         }
         return;
     }
@@ -53,12 +53,8 @@ export function getSupabaseClient() {
 export function getSupabaseAdmin() {
     init();
     if (!supabaseAdmin) {
-        console.warn('[supabase] Admin client not initialized — missing SUPABASE_URL');
+        console.warn('[supabase] Admin client not initialized — missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
         return null;
-    }
-    if (!SUPABASE_SERVICE_ROLE_KEY) {
-        // One-time prominent warning in production logs
-        console.error('[supabase] Admin client is using ANON key (writes blocked by RLS). Set SUPABASE_SERVICE_ROLE_KEY.');
     }
     return supabaseAdmin;
 }

@@ -62,11 +62,15 @@ export function createPersistence() {
                 return;
             hydrated = true; // mark first so concurrent calls don't repeat
             try {
-                await hydrateFromSupabase(supabase);
+                // 15s timeout — if Supabase is unreachable or slow, don't block the function.
+                await Promise.race([
+                    hydrateFromSupabase(supabase),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Hydration timeout after 15s')), 15_000)),
+                ]);
             }
             catch (err) {
                 hydrated = false; // allow retry on next call
-                console.error(`[persistence] Supabase unreachable: ${err.message}. Continuing in offline mode.`);
+                console.error(`[persistence] Hydration failed: ${err.message}. Continuing in offline mode.`);
             }
             // Always start the worker — even if hydration failed — so queued writes
             // can drain once Supabase becomes reachable again.

@@ -14,29 +14,48 @@ async function initializeApp() {
     if (initError)
         throw initError;
     try {
+        // Log env var status immediately — critical for diagnosing issues
         console.log('[Vercel] Starting initialization...');
         console.log('[Vercel] NODE_ENV:', process.env.NODE_ENV);
-        // initDbAsync opens the in-memory SQLite (seeded + migrated) and then
-        // awaits Supabase hydration if credentials are configured. The first
-        // request waits for this — subsequent requests are unblocked because
-        // `initialized` short-circuits.
+        console.log('[Vercel] Env vars:', JSON.stringify({
+            SUPABASE_URL: !!process.env.SUPABASE_URL,
+            SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,
+            SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+            ENCRYPTION_KEY: !!process.env.ENCRYPTION_KEY,
+            SESSION_SECRET: !!process.env.SESSION_SECRET,
+        }));
+        if (!process.env.SUPABASE_URL) {
+            console.error('[Vercel] WARNING: SUPABASE_URL is NOT set. Data will NOT persist across cold starts.');
+        }
+        if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            console.error('[Vercel] CRITICAL: SUPABASE_SERVICE_ROLE_KEY is NOT set. ALL Supabase writes will fail silently.');
+        }
+        if (!process.env.ENCRYPTION_KEY) {
+            console.error('[Vercel] WARNING: ENCRYPTION_KEY is NOT set. Keys may not decrypt correctly.');
+        }
         await initDbAsync();
         console.log('[Vercel] Database initialized');
         app = createApp();
         console.log('[Vercel] Express app created');
         startHealthChecker();
         console.log('[Vercel] Health checker started');
-        // Verify Supabase connection and log configuration status
+        // Verify Supabase connection
         const { verifySupabaseConnection } = await import('../server/dist/db/supabase.js');
         const supabaseOk = await verifySupabaseConnection();
-        if (!supabaseOk && process.env.SUPABASE_URL) {
-            console.error('[Vercel] WARNING: Supabase is configured but connection failed. Data will NOT persist across cold starts.');
+        if (supabaseOk) {
+            console.log('[Vercel] Supabase connection verified OK');
+        }
+        else if (process.env.SUPABASE_URL) {
+            console.error('[Vercel] WARNING: Supabase is configured but connection FAILED. Data will NOT persist.');
+        }
+        else {
+            console.log('[Vercel] Supabase not configured (no SUPABASE_URL). Running in local-only mode.');
         }
         initialized = true;
         console.log('[Vercel] App initialized successfully');
     }
     catch (error) {
-        console.error('[Vercel] Initialization failed:', error);
+        console.error('[Vercel] Initialization FAILED:', error);
         initError = error;
         throw error;
     }
