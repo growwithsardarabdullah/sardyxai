@@ -96,10 +96,10 @@ export function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Debug: persistence status (admin only)
-  app.get('/api/debug/persistence', requireAuth, async (_req, res) => {
+  // Debug: persistence status (no auth required — shows booleans only, no secrets)
+  app.get('/api/debug/persistence', async (_req, res) => {
     const { getPersistence } = await import('./db/index.js');
-    const { getSupabaseAdmin, verifySupabaseConnection } = await import('./db/supabase.js');
+    const { getSupabaseAdmin } = await import('./db/supabase.js');
     const persistence = getPersistence();
     const stats = persistence.stats();
     const sb = getSupabaseAdmin();
