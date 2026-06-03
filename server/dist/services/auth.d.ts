@@ -16,6 +16,12 @@ export declare function deleteSession(token: string | undefined | null): void;
 export declare function userCount(): number;
 /** Create a user. Throws { code: 'email_taken' } if the email already exists. */
 export declare function createUser(email: string, password: string): SessionUser;
+export declare function createPasswordResetToken(email: string): string | null;
+export declare function verifyPasswordResetToken(token: string): {
+    userId: number;
+    email: string;
+} | null;
+export declare function resetPassword(token: string, newPassword: string): boolean;
 /** Verify credentials. Returns the user on success, null on failure. */
 export declare function verifyCredentials(email: string, password: string): SessionUser | null;
 //# sourceMappingURL=auth.d.ts.map

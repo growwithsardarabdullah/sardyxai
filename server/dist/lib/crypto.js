@@ -40,8 +40,14 @@ function getVercelStableKeySource() {
 // On Vercel, we derive a stable key from deployment metadata so previously-
 // encrypted API keys remain decryptable across cold starts.
 function isDevFallbackAllowed() {
+    // On Vercel (production), always allow fallback to deployment-derived keys
+    // so the app works even if ENCRYPTION_KEY is not set. This is acceptable
+    // because each deployment gets a stable key from VERCEL_DEPLOYMENT_ID.
+    // In true production (non-Vercel), require an explicit key.
     const isVercel = !!process.env.VERCEL;
-    return process.env.NODE_ENV !== 'production' || isVercel;
+    if (isVercel)
+        return true;
+    return process.env.NODE_ENV !== 'production';
 }
 function missingKeyError() {
     return new Error('ENCRYPTION_KEY is required in production for API key encryption. ' +
@@ -70,14 +76,23 @@ export function initEncryptionKey(db) {
     if (!isDevFallbackAllowed()) {
         throw missingKeyError();
     }
-    // 2. Vercel deployment metadata — stable per cold-start of same deploy
-    const vercelKeySource = getVercelStableKeySource();
+    // 2. Vercel deployment metadata — stable per cold-start of same deploy.
+    //    Use VERCEL_PROJECT_PRODUCTION_URL first (stable across deploys for the
+    //    same project) then VERCEL_DEPLOYMENT_ID (changes on redeploy).
+    const vercelKeySource = process.env.VERCEL_PROJECT_PRODUCTION_URL
+        || process.env.VERCEL_URL
+        || process.env.VERCEL_DEPLOYMENT_ID
+        || process.env.VERCEL_GIT_COMMIT_SHA
+        || null;
     if (vercelKeySource) {
         const derived = crypto.createHash('sha256')
-            .update(`freellmapi-encryption-key:v1:${vercelKeySource}`)
+            .update(`freellmapi-encryption-key:v2:${vercelKeySource}`)
             .digest('hex');
         cachedKey = parseHexKey(derived, 'env');
-        console.warn(`[crypto] No ENCRYPTION_KEY set — derived a STABLE key from Vercel metadata (${vercelKeySource.substring(0, 12)}...). This survives cold starts of THIS deployment but is LOST on redeploy. For long-term persistence, set ENCRYPTION_KEY in Vercel env vars.`);
+        const sourceName = process.env.VERCEL_PROJECT_PRODUCTION_URL ? 'PROJECT_PRODUCTION_URL'
+            : process.env.VERCEL_URL ? 'VERCEL_URL'
+                : process.env.VERCEL_DEPLOYMENT_ID ? 'DEPLOYMENT_ID' : 'GIT_COMMIT_SHA';
+        console.warn(`[crypto] No ENCRYPTION_KEY set — derived a STABLE key from Vercel ${sourceName}. This survives cold starts of THIS deployment. For maximum stability, set ENCRYPTION_KEY in Vercel env vars.`);
         return;
     }
     // 3. Check DB for persisted key (dev/single-process only)

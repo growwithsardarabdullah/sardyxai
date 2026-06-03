@@ -175,11 +175,17 @@ async function hydrateFromSupabase(supabase) {
             localModelIdByKey.set(`${m.platform}::${m.model_id}`, local.id);
     }
     // 2) Users. Email is the stable key — re-hydrating doesn't blow away anyone.
-    const insertUser = db.prepare(`
-    INSERT OR IGNORE INTO users (email, password_hash, session_version) VALUES (?, ?, 0)
+    //    On cold start, local session_version is 0. We need to sync from Supabase
+    //    so that logout invalidation works across cold starts. Use UPSERT to
+    //    update session_version if the user already exists locally.
+    const upsertUser = db.prepare(`
+    INSERT INTO users (email, password_hash, session_version) VALUES (?, ?, ?)
+    ON CONFLICT(email) DO UPDATE SET
+      password_hash = excluded.password_hash,
+      session_version = MAX(COALESCE(users.session_version, 0), COALESCE(excluded.session_version, 0))
   `);
     for (const u of users) {
-        insertUser.run(u.email, u.password_hash);
+        upsertUser.run(u.email, u.password_hash, u.session_version ?? 0);
     }
     // 3) API keys. The local table has no UNIQUE on (platform, label) — SQLite
     //    uses rowid. Insert blindly; if a key with the same platform+label exists

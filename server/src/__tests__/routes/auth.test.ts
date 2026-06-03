@@ -62,8 +62,13 @@ describe('Dashboard auth (#35)', () => {
     expect((await call(app, 'GET', '/api/keys', undefined, token)).status).toBe(200);
   });
 
-  it('refuses a second setup once an account exists', async () => {
+  it('allows multiple user registrations via /setup', async () => {
     const { status } = await call(app, 'POST', '/api/auth/setup', { email: 'second@example.com', password: 'supersecret' });
+    expect(status).toBe(201);
+  });
+
+  it('rejects duplicate email on registration', async () => {
+    const { status } = await call(app, 'POST', '/api/auth/register', { email: 'admin@example.com', password: 'supersecret' });
     expect(status).toBe(409);
   });
 

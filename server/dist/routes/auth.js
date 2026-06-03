@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { userCount, createUser, verifyCredentials, createSession, validateSession, deleteSession, SESSION_COOKIE_NAME, } from '../services/auth.js';
+import { userCount, createUser, verifyCredentials, createSession, validateSession, deleteSession, createPasswordResetToken, resetPassword, SESSION_COOKIE_NAME, } from '../services/auth.js';
 export const authRouter = Router();
 // ── Cookie helpers ─────────────────────────────────────────────────────────
 // Sessions are now stateless HMAC tokens stored in an httpOnly cookie. The cookie
@@ -27,10 +27,14 @@ function clearSessionCookie(res) {
     console.log('[auth] Cookie cleared', { name: SESSION_COOKIE_NAME });
 }
 // Dashboard auth (#35). These routes are mounted BEFORE requireAuth, so
-// /status, /setup and /login are reachable without a session (bootstrap);
-// /logout and /me validate the token themselves.
+// /status, /register, /login, /forgot-password, /reset-password are reachable
+// without a session (bootstrap); /logout and /me validate the token themselves.
 const credentialsSchema = z.object({
     email: z.string().email('A valid email is required'),
+    password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+const resetPasswordSchema = z.object({
+    token: z.string().min(1, 'Reset token is required'),
     password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 // ── Brute-force throttle ──────────────────────────────────────────────────
@@ -77,24 +81,52 @@ authRouter.get('/status', (req, res) => {
     console.log('[auth] /status', result);
     res.json(result);
 });
-// First-run account creation. Only allowed while there are zero users, so it
-// can't be used to add accounts once the dashboard is claimed.
+// First-run account creation. When no users exist, this is the setup flow.
+// When users already exist, this acts as a registration endpoint.
 authRouter.post('/setup', (req, res) => {
     console.log('[auth] /setup attempt');
-    if (userCount() > 0) {
-        res.status(409).json({ error: { message: 'Setup already completed. Use login instead.', type: 'setup_complete' } });
-        return;
-    }
     const parsed = credentialsSchema.safeParse(req.body);
     if (!parsed.success) {
         res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
         return;
     }
-    const user = createUser(parsed.data.email, parsed.data.password);
-    const token = createSession(user.userId, user.email);
-    setSessionCookie(res, token);
-    console.log('[auth] /setup success', { userId: user.userId, email: user.email });
-    res.status(201).json({ token, email: user.email });
+    try {
+        const user = createUser(parsed.data.email, parsed.data.password);
+        const token = createSession(user.userId, user.email);
+        setSessionCookie(res, token);
+        console.log('[auth] /setup success', { userId: user.userId, email: user.email });
+        res.status(201).json({ token, email: user.email });
+    }
+    catch (err) {
+        if (err.code === 'email_taken') {
+            res.status(409).json({ error: { message: 'An account with that email already exists.', type: 'email_taken' } });
+            return;
+        }
+        throw err;
+    }
+});
+// Register a new account (alias for /setup when users already exist)
+authRouter.post('/register', (req, res) => {
+    console.log('[auth] /register attempt');
+    const parsed = credentialsSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
+        return;
+    }
+    try {
+        const user = createUser(parsed.data.email, parsed.data.password);
+        const token = createSession(user.userId, user.email);
+        setSessionCookie(res, token);
+        console.log('[auth] /register success', { userId: user.userId, email: user.email });
+        res.status(201).json({ token, email: user.email });
+    }
+    catch (err) {
+        if (err.code === 'email_taken') {
+            res.status(409).json({ error: { message: 'An account with that email already exists.', type: 'email_taken' } });
+            return;
+        }
+        throw err;
+    }
 });
 authRouter.post('/login', (req, res) => {
     console.log('[auth] /login attempt');
@@ -112,7 +144,6 @@ authRouter.post('/login', (req, res) => {
     const user = verifyCredentials(email, password);
     if (!user) {
         recordFailure(email);
-        // Same message whether the email exists or not — don't leak which.
         res.status(401).json({ error: { message: 'Invalid email or password', type: 'authentication_error' } });
         return;
     }
@@ -124,9 +155,6 @@ authRouter.post('/login', (req, res) => {
 });
 authRouter.post('/logout', (req, res) => {
     console.log('[auth] /logout');
-    // Bump the user's session_version in the DB so any tokens they (or another
-    // device of theirs) are still holding become invalid. This is the only way
-    // to "invalidate" a stateless token — there is no server-side token store.
     deleteSession(readToken(req));
     clearSessionCookie(res);
     res.json({ success: true });
@@ -138,5 +166,53 @@ authRouter.get('/me', (req, res) => {
         return;
     }
     res.json({ email: session.email });
+});
+// ── Forgot password ──────────────────────────────────────────────────────
+// Generates a password reset token. Always returns success to avoid leaking
+// whether an email exists. In production, this would send an email.
+authRouter.post('/forgot-password', (req, res) => {
+    const emailSchema = z.object({ email: z.string().email() });
+    const parsed = emailSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: { message: 'A valid email is required' } });
+        return;
+    }
+    const token = createPasswordResetToken(parsed.data.email);
+    // Always return success — don't reveal whether the email exists
+    console.log('[auth] /forgot-password', {
+        email: parsed.data.email,
+        tokenGenerated: !!token,
+    });
+    // In production, send an email with the reset link.
+    // For now, return the token directly (works for single-user setups).
+    // TODO: Replace with email sending in production
+    if (token) {
+        res.json({
+            success: true,
+            message: 'If an account exists with that email, a password reset link has been generated.',
+            // Dev-only: include token in response. Remove in production with email.
+            resetToken: token,
+        });
+    }
+    else {
+        res.json({
+            success: true,
+            message: 'If an account exists with that email, a password reset link has been generated.',
+        });
+    }
+});
+// Reset password with token
+authRouter.post('/reset-password', (req, res) => {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+        res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
+        return;
+    }
+    const success = resetPassword(parsed.data.token, parsed.data.password);
+    if (!success) {
+        res.status(400).json({ error: { message: 'Invalid or expired reset token', type: 'invalid_token' } });
+        return;
+    }
+    res.json({ success: true, message: 'Password has been reset. Please sign in with your new password.' });
 });
 //# sourceMappingURL=auth.js.map

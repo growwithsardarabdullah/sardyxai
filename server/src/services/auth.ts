@@ -3,6 +3,10 @@ import { getDb, getPersistence } from '../db/index.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { getSupabaseAdmin } from '../db/supabase.js';
 
+// ── Password reset tokens ──────────────────────────────────────────────────
+// Stateless HMAC tokens for forgot-password flow. Valid for 1 hour.
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
 // Dashboard authentication: email + password accounts with stateless, HMAC-signed
 // session tokens. Distinct from the unified API key, which authenticates the /v1
 // proxy for apps — this gates the /api/* admin surface for the human operator (#35).
@@ -237,6 +241,70 @@ export function createUser(email: string, password: string): SessionUser {
   }, `users:insert:${userId}`);
 
   return { userId, email: normalized };
+}
+
+// ── Password reset (forgot password) ──────────────────────────────────────
+
+export function createPasswordResetToken(email: string): string | null {
+  const db = getDb();
+  const normalized = normalizeEmail(email);
+  const row = db.prepare('SELECT id FROM users WHERE email = ?').get(normalized) as { id: number } | undefined;
+  if (!row) return null;
+
+  const exp = Date.now() + RESET_TOKEN_TTL_MS;
+  const payload = JSON.stringify({ userId: row.id, email: normalized, exp, purpose: 'reset' });
+  const encoded = base64url(payload);
+  const sig = sign(encoded);
+  return `${encoded}.${sig}`;
+}
+
+export function verifyPasswordResetToken(token: string): { userId: number; email: string } | null {
+  if (!token) return null;
+  const dot = token.indexOf('.');
+  if (dot <= 0 || dot === token.length - 1) return null;
+
+  const encoded = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+
+  const expected = sign(encoded);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  let payload: { userId: number; email: string; exp: number; purpose?: string };
+  try {
+    payload = JSON.parse(base64urlDecode(encoded).toString('utf8'));
+  } catch { return null; }
+
+  if (payload.purpose !== 'reset') return null;
+  if (payload.exp < Date.now()) return null;
+  if (typeof payload.userId !== 'number' || typeof payload.email !== 'string') return null;
+
+  return { userId: payload.userId, email: payload.email };
+}
+
+export function resetPassword(token: string, newPassword: string): boolean {
+  const session = verifyPasswordResetToken(token);
+  if (!session) return false;
+
+  const db = getDb();
+  const passwordHash = hashPassword(newPassword);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, session.userId);
+
+  // Bump session version to invalidate all existing sessions (force re-login)
+  db.prepare('UPDATE users SET session_version = COALESCE(session_version, 0) + 1 WHERE id = ?').run(session.userId);
+
+  // Mirror to Supabase
+  getPersistence().enqueueWrite(async () => {
+    const sb = getSupabaseAdmin();
+    if (!sb) return;
+    const { error } = await sb.from('users')
+      .update({ password_hash: passwordHash })
+      .eq('email', session.email);
+    if (error) throw new Error(`users password reset: ${error.message}`);
+  }, `users:reset-password:${session.userId}`);
+
+  return true;
 }
 
 /** Verify credentials. Returns the user on success, null on failure. */

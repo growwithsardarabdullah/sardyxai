@@ -78,6 +78,8 @@ export async function initDbAsync(dbPath) {
         persistence = createPersistence();
     if (persistence.isSupabase) {
         await persistence.hydrateIfNeeded();
+        // Flush any writes that were queued during initialization (e.g. unified key)
+        await persistence.flush();
     }
     return handle;
 }
@@ -175,6 +177,7 @@ function createTables(db) {
       session_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
     -- Legacy sessions table — kept around for migration only; new tokens are
     -- stateless HMAC cookies. The schema is still here in case anyone needs
@@ -1359,6 +1362,16 @@ function ensureUnifiedKey(db) {
         const key = `freellmapi-${crypto.randomBytes(24).toString('hex')}`;
         db.prepare("INSERT INTO settings (key, value) VALUES ('unified_api_key', ?)").run(key);
         console.log(`\n  Your unified API key: ${key}\n`);
+        // Persist to Supabase immediately so it survives cold starts
+        getPersistence().enqueueWrite(async () => {
+            const { getSupabaseAdmin } = await import('./supabase.js');
+            const sb = getSupabaseAdmin();
+            if (!sb)
+                return;
+            const { error } = await sb.from('settings').upsert({ key: 'unified_api_key', value: key, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+            if (error)
+                throw new Error(`settings upsert (unified key init): ${error.message}`);
+        }, 'settings:unified_api_key:init');
     }
 }
 export function getUnifiedApiKey() {
