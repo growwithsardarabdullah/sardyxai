@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { userCount, createUser, verifyCredentials, createSession, validateSession, SESSION_COOKIE_NAME, } from '../services/auth.js';
+import { userCount, createUser, verifyCredentials, createSession, validateSession, deleteSession, SESSION_COOKIE_NAME, } from '../services/auth.js';
 export const authRouter = Router();
 // ── Cookie helpers ─────────────────────────────────────────────────────────
 // Sessions are now stateless HMAC tokens stored in an httpOnly cookie. The cookie
@@ -124,6 +124,10 @@ authRouter.post('/login', (req, res) => {
 });
 authRouter.post('/logout', (req, res) => {
     console.log('[auth] /logout');
+    // Bump the user's session_version in the DB so any tokens they (or another
+    // device of theirs) are still holding become invalid. This is the only way
+    // to "invalidate" a stateless token — there is no server-side token store.
+    deleteSession(readToken(req));
     clearSessionCookie(res);
     res.json({ success: true });
 });

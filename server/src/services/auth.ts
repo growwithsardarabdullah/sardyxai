@@ -22,6 +22,25 @@ export interface SessionUser {
 
 export const SESSION_COOKIE_NAME = 'freellmapi_session';
 
+// Per-user token version. Bumped on logout (and on login from a different
+// device) so any previously-issued stateless token with an older version is
+// rejected — this gives us real logout invalidation while keeping the cookie
+// itself stateless (no DB row per session).
+function getUserSessionVersion(userId: number): number {
+  try {
+    const row = getDb().prepare('SELECT session_version FROM users WHERE id = ?').get(userId) as { session_version: number } | undefined;
+    return row?.session_version ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function bumpUserSessionVersion(userId: number): void {
+  try {
+    getDb().prepare('UPDATE users SET session_version = COALESCE(session_version, 0) + 1 WHERE id = ?').run(userId);
+  } catch { /* ignore */ }
+}
+
 function getSessionSecret(): string {
   // Persistent secret. If SESSION_SECRET env var is set, use it. Otherwise derive
   // a stable secret from ENCRYPTION_KEY (which the user must already set in
@@ -61,18 +80,23 @@ function sign(payload: string): string {
   );
 }
 
-/** Mint a signed session token. No DB write. */
-export function createSession(userId: number, email: string): string {
+/**
+ * Mint a signed session token. The token is stateless (no DB row), but it
+ * carries the user's `v` (session_version) field so we can invalidate all of a
+ * user's tokens by bumping that version in the DB on logout.
+ */
+export function createSession(userId: number, email: string = ''): string {
   const exp = Date.now() + SESSION_TTL_MS;
-  const payload = JSON.stringify({ userId, email, exp });
+  const v = getUserSessionVersion(userId);
+  const payload = JSON.stringify({ userId, email, exp, v });
   const encoded = base64url(payload);
   const sig = sign(encoded);
   const token = `${encoded}.${sig}`;
-  console.log('[auth] Session created', { userId, email, exp, tokenLen: token.length });
+  console.log('[auth] Session created', { userId, email, exp, v, tokenLen: token.length });
   return token;
 }
 
-/** Verify a signed session token. Returns the user on success, null on bad/expired. */
+/** Verify a signed session token. Returns the user on success, null on bad/expired/invalidated. */
 export function validateSession(token: string | undefined | null): SessionUser | null {
   if (!token) return null;
   const dot = token.indexOf('.');
@@ -92,7 +116,7 @@ export function validateSession(token: string | undefined | null): SessionUser |
     return null;
   }
 
-  let payload: { userId: number; email: string; exp: number };
+  let payload: { userId: number; email: string; exp: number; v?: number };
   try {
     payload = JSON.parse(base64urlDecode(encoded).toString('utf8'));
   } catch {
@@ -107,13 +131,25 @@ export function validateSession(token: string | undefined | null): SessionUser |
     console.log('[auth] Session validation failed: expired', { exp: payload.exp, now: Date.now() });
     return null;
   }
+  // Compare the token's session_version with the DB. If the user has logged
+  // out since this token was issued, their version is now higher and we reject
+  // the token. This is the "real" logout invalidation.
+  const currentVersion = getUserSessionVersion(payload.userId);
+  const tokenVersion = payload.v ?? 0;
+  if (tokenVersion !== currentVersion) {
+    console.log('[auth] Session validation failed: invalidated by logout', { tokenVersion, currentVersion });
+    return null;
+  }
   return { userId: payload.userId, email: payload.email };
 }
 
-/** Stateless — no DB write. Kept for API compatibility with /api/auth/logout. */
-export function deleteSession(_token: string | undefined | null): void {
-  // No-op: stateless sessions expire on their own. The caller is responsible for
-  // clearing the cookie on the response.
+/** Invalidate all of a user's currently-issued tokens by bumping their session_version. */
+export function deleteSession(token: string | undefined | null): void {
+  if (!token) return;
+  const session = validateSession(token);
+  if (!session) return;
+  bumpUserSessionVersion(session.userId);
+  console.log('[auth] deleteSession: bumped session_version for user', { userId: session.userId });
 }
 
 function normalizeEmail(email: string): string {

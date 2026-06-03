@@ -5,7 +5,7 @@ import { createUser, createSession } from '../../services/auth.js';
 
 export function mintDashboardToken(email = 'test@example.com'): string {
   const user = createUser(email, 'password123');
-  return createSession(user.userId);
+  return createSession(user.userId, user.email);
 }
 
 // Gated = under /api/ but not the public bootstrap routes (/api/auth/*, /api/ping).

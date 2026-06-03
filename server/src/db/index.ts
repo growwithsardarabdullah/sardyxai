@@ -158,9 +158,13 @@ function createTables(db: Database.Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      session_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Legacy sessions table — kept around for migration only; new tokens are
+    -- stateless HMAC cookies. The schema is still here in case anyone needs
+    -- to inspect historical state.
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -179,6 +183,7 @@ function createTables(db: Database.Database) {
   ensureRequestKeyIdColumn(db);
   ensureApiKeysBaseUrlColumn(db);
   ensureRequestTtfbColumn(db);
+  ensureUsersSessionVersionColumn(db);
 }
 
 // `ttfb_ms` is the time-to-first-byte for streaming responses (ms from dispatch
@@ -205,6 +210,16 @@ function ensureApiKeysBaseUrlColumn(db: Database.Database) {
   const columns = db.prepare('PRAGMA table_info(api_keys)').all() as { name: string }[];
   if (!columns.some(col => col.name === 'base_url')) {
     db.prepare('ALTER TABLE api_keys ADD COLUMN base_url TEXT').run();
+  }
+}
+
+// `session_version` lets us invalidate all of a user's issued stateless tokens
+// by bumping a single integer in the DB. Added in the post-stateless-cookie
+// migration; older DBs need an ALTER TABLE.
+function ensureUsersSessionVersionColumn(db: Database.Database) {
+  const columns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!columns.some(col => col.name === 'session_version')) {
+    db.prepare("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0").run();
   }
 }
 

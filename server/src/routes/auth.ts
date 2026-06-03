@@ -7,6 +7,7 @@ import {
   verifyCredentials,
   createSession,
   validateSession,
+  deleteSession,
   SESSION_COOKIE_NAME,
 } from '../services/auth.js';
 
@@ -148,6 +149,10 @@ authRouter.post('/login', (req: Request, res: Response) => {
 
 authRouter.post('/logout', (req: Request, res: Response) => {
   console.log('[auth] /logout');
+  // Bump the user's session_version in the DB so any tokens they (or another
+  // device of theirs) are still holding become invalid. This is the only way
+  // to "invalidate" a stateless token — there is no server-side token store.
+  deleteSession(readToken(req));
   clearSessionCookie(res);
   res.json({ success: true });
 });
