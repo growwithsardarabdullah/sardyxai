@@ -122,6 +122,8 @@ export function createPersistence(): PersistenceHandle {
     const startMs = Date.now();
     const total = queue.length;
     let ok = 0;
+    let failed = 0;
+    const failedLabels: string[] = [];
     try {
       while (queue.length > 0) {
         const job = queue.shift()!;
@@ -134,11 +136,19 @@ export function createPersistence(): PersistenceHandle {
           ]);
           ok++;
         } catch (err) {
-          console.error(`[persistence] Write failed (${job.label}): ${(err as Error).message}`);
+          failed++;
+          if (failedLabels.length < 5) failedLabels.push(job.label);
+          console.error(`[persistence] Write FAILED (${job.label}): ${(err as Error).message}`);
         }
       }
       const elapsed = Date.now() - startMs;
-      console.log(`[persistence] Wrote ${ok}/${total} to Supabase in ${elapsed}ms`);
+      if (failed > 0) {
+        console.error(`[persistence] BATCH: ${ok}/${total} succeeded, ${failed}/${total} FAILED in ${elapsed}ms — data NOT persisted to Supabase`);
+        console.error(`[persistence] Failed jobs: ${failedLabels.join(', ')}${failed > 5 ? ` ... and ${failed - 5} more` : ''}`);
+        console.error(`[persistence] CHECK: Is SUPABASE_SERVICE_ROLE_KEY set? RLS requires service_role for ALL writes.`);
+      } else {
+        console.log(`[persistence] Wrote ${ok}/${total} to Supabase in ${elapsed}ms`);
+      }
     } finally {
       workerBusy = false;
     }

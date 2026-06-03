@@ -34,6 +34,13 @@ async function initializeApp() {
     startHealthChecker();
     console.log('[Vercel] Health checker started');
 
+    // Verify Supabase connection and log configuration status
+    const { verifySupabaseConnection } = await import('../server/dist/db/supabase.js');
+    const supabaseOk = await verifySupabaseConnection();
+    if (!supabaseOk && process.env.SUPABASE_URL) {
+      console.error('[Vercel] WARNING: Supabase is configured but connection failed. Data will NOT persist across cold starts.');
+    }
+
     initialized = true;
     console.log('[Vercel] App initialized successfully');
   } catch (error) {
