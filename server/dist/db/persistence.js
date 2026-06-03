@@ -158,16 +158,23 @@ async function hydrateFromSupabase(supabase) {
     const models = (modelsRes.data ?? []);
     const fallback = (fallbackRes.data ?? []);
     const settings = (settingsRes.data ?? []);
-    if (usersRes.error)
-        throw new Error(`users: ${usersRes.error.message}`);
-    if (keysRes.error)
-        throw new Error(`api_keys: ${keysRes.error.message}`);
-    if (modelsRes.error)
-        throw new Error(`models: ${modelsRes.error.message}`);
-    if (fallbackRes.error)
-        throw new Error(`fallback_config: ${fallbackRes.error.message}`);
-    if (settingsRes.error)
-        throw new Error(`settings: ${settingsRes.error.message}`);
+    if (usersRes.error) {
+        console.error(`[persistence] users SELECT failed: ${usersRes.error.message} (code: ${usersRes.error.code})`);
+        console.error(`[persistence] This usually means SUPABASE_SERVICE_ROLE_KEY is wrong or RLS is blocking the query`);
+    }
+    if (keysRes.error) {
+        console.error(`[persistence] api_keys SELECT failed: ${keysRes.error.message} (code: ${keysRes.error.code})`);
+    }
+    if (modelsRes.error) {
+        console.error(`[persistence] models SELECT failed: ${modelsRes.error.message} (code: ${modelsRes.error.code})`);
+    }
+    if (fallbackRes.error) {
+        console.error(`[persistence] fallback_config SELECT failed: ${fallbackRes.error.message} (code: ${fallbackRes.error.code})`);
+    }
+    if (settingsRes.error) {
+        console.error(`[persistence] settings SELECT failed: ${settingsRes.error.message} (code: ${settingsRes.error.code})`);
+    }
+    console.log(`[persistence] Supabase returned: ${users.length} users, ${keys.length} api_keys, ${models.length} models, ${fallback.length} fallback, ${settings.length} settings`);
     // 1) Models first (fallback_config references them).
     //    Use INSERT OR IGNORE — the local seed already populated the catalog,
     //    and UNIQUE(platform, model_id) makes this safe. Custom models added by

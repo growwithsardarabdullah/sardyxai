@@ -239,6 +239,7 @@ proxyRouter.post('/chat/completions', async (req, res) => {
     // not a reliable authorization boundary.
     const token = extractApiToken(req);
     if (!token) {
+        console.log(`[proxy] No API key provided from ${req.ip}`);
         res.status(401).json({
             error: { message: 'Invalid API key', type: 'authentication_error' },
         });
@@ -247,11 +248,13 @@ proxyRouter.post('/chat/completions', async (req, res) => {
     // Look up which user owns this unified API key
     const userEmail = getUserForUnifiedKey(token);
     if (userEmail === null) {
+        console.log(`[proxy] Unknown API key from ${req.ip}: ${token.substring(0, 20)}...`);
         res.status(401).json({
             error: { message: 'Invalid API key', type: 'authentication_error' },
         });
         return;
     }
+    console.log(`[proxy] Auth OK user=${userEmail || '(legacy)'} model=${req.body.model || 'auto'} from=${req.ip}`);
     // Validate request
     const parsed = chatCompletionSchema.safeParse(req.body);
     if (!parsed.success) {

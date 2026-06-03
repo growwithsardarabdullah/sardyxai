@@ -126,8 +126,9 @@ export function createSession(userId, email = '') {
 }
 /** Verify a signed session token. Returns the user on success, null on bad/expired/invalidated. */
 export function validateSession(token) {
-    if (!token)
+    if (!token) {
         return null;
+    }
     const dot = token.indexOf('.');
     if (dot <= 0 || dot === token.length - 1) {
         console.log('[auth] Session validation failed: malformed token');
@@ -168,6 +169,7 @@ export function validateSession(token) {
         console.log('[auth] Session validation failed: invalidated by logout', { tokenVersion, currentVersion });
         return null;
     }
+    console.log(`[auth] Session OK: userId=${payload.userId} email=${payload.email}`);
     return { userId: payload.userId, email: payload.email };
 }
 /** Invalidate all of a user's currently-issued tokens by bumping their session_version. */
@@ -213,14 +215,19 @@ export function createUser(email, password) {
     // uses email as the stable identifier and lets Supabase auto-assign.
     getPersistence().enqueueWrite(async () => {
         const sb = getSupabaseAdmin();
-        if (!sb)
+        if (!sb) {
+            console.error(`[auth] Supabase admin client unavailable — user ${normalized} will NOT persist across cold starts`);
             return;
+        }
         const { error } = await sb.from('users').insert({
             email: normalized,
             password_hash: passwordHash,
         });
-        if (error)
+        if (error) {
+            console.error(`[auth] Supabase user INSERT FAILED for ${normalized}: ${error.message} (code: ${error.code})`);
             throw new Error(`users insert: ${error.message}`);
+        }
+        console.log(`[auth] Supabase user INSERT OK for ${normalized}`);
     }, `users:insert:${userId}`);
     return { userId, email: normalized };
 }

@@ -12,6 +12,7 @@ settingsRouter.get('/api-key', (req, res) => {
         return;
     }
     const apiKey = ensureUserUnifiedKey(email);
+    console.log(`[settings] GET /api-key user=${email} → ${apiKey.substring(0, 20)}...`);
     res.json({ apiKey });
 });
 // Regenerate the unified API key for this user

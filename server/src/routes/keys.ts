@@ -115,12 +115,19 @@ keysRouter.post('/', (req: Request, res: Response) => {
   // Mirror to Supabase so the key survives a Vercel cold start.
   getPersistence().enqueueWrite(async () => {
     const sb = getSupabaseAdmin();
-    if (!sb) return;
+    if (!sb) {
+      console.error(`[keys] Supabase admin client unavailable — key ${newId} will NOT persist across cold starts`);
+      return;
+    }
     const { error } = await sb.from('api_keys').insert({
       user_email: email, platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
       status: 'unknown', enabled: true,
     });
-    if (error) throw new Error(`api_keys insert: ${error.message}`);
+    if (error) {
+      console.error(`[keys] Supabase INSERT FAILED for id=${newId} platform=${platform}: ${error.message} (code: ${error.code})`);
+      throw new Error(`api_keys insert: ${error.message}`);
+    }
+    console.log(`[keys] Supabase INSERT OK for id=${newId} platform=${platform} user=${email}`);
   }, `api_keys:insert:${newId}`);
 
   res.status(201).json({
