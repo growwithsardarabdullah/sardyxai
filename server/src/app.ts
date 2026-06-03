@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import path from 'path';
@@ -49,8 +50,25 @@ export function createApp() {
     origin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
       callback(null, !origin || allowedCorsOrigins.has(origin));
     },
+    credentials: true,
   }));
   app.use(express.json({ limit: '1mb' }));
+  // Cookie parser — required so /api/auth can read the httpOnly session cookie.
+  // Hand-rolled (no extra dep) — only the `freellmapi_session` cookie is read.
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const header = req.headers.cookie;
+    if (!header) { next(); return; }
+    const jar: Record<string, string> = {};
+    for (const part of header.split(';')) {
+      const eq = part.indexOf('=');
+      if (eq <= 0) continue;
+      const k = part.slice(0, eq).trim();
+      const v = part.slice(eq + 1).trim();
+      if (k) jar[k] = decodeURIComponent(v);
+    }
+    (req as Request & { cookies?: Record<string, string> }).cookies = jar;
+    next();
+  });
 
   // Dashboard auth (#35): /api/auth/{status,setup,login} bootstrap without a
   // session; everything else under /api/* requires a logged-in dashboard user.

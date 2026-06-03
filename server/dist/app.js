@@ -43,8 +43,30 @@ export function createApp() {
         origin(origin, callback) {
             callback(null, !origin || allowedCorsOrigins.has(origin));
         },
+        credentials: true,
     }));
     app.use(express.json({ limit: '1mb' }));
+    // Cookie parser — required so /api/auth can read the httpOnly session cookie.
+    // Hand-rolled (no extra dep) — only the `freellmapi_session` cookie is read.
+    app.use((req, _res, next) => {
+        const header = req.headers.cookie;
+        if (!header) {
+            next();
+            return;
+        }
+        const jar = {};
+        for (const part of header.split(';')) {
+            const eq = part.indexOf('=');
+            if (eq <= 0)
+                continue;
+            const k = part.slice(0, eq).trim();
+            const v = part.slice(eq + 1).trim();
+            if (k)
+                jar[k] = decodeURIComponent(v);
+        }
+        req.cookies = jar;
+        next();
+    });
     // Dashboard auth (#35): /api/auth/{status,setup,login} bootstrap without a
     // session; everything else under /api/* requires a logged-in dashboard user.
     // The /v1 proxy keeps its own unified-API-key auth and is NOT gated here.

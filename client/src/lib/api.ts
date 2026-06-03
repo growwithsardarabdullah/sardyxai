@@ -1,33 +1,22 @@
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
-const TOKEN_KEY = 'freellmapi_dashboard_token';
-
-// Dashboard session token (#35). Stored in localStorage; sent as a Bearer on
-// every /api request and cleared on a 401.
-export function getToken(): string | null {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
-}
-export function setToken(token: string): void {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* ignore */ }
-}
-export function clearToken(): void {
-  try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
-}
+// Dashboard auth now uses an httpOnly cookie (`freellmapi_session`) set by the
+// server. The browser automatically sends it on every same-origin request,
+// including the initial page load and after a refresh — so we don't need to
+// (and shouldn't) read/write the token from JavaScript. This file only retains
+// the apiFetch wrapper used by the rest of the client, plus a logout helper.
 
 export const UNAUTHORIZED_EVENT = 'freellmapi:unauthorized';
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getToken();
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(path, {
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
     ...options,
   });
   if (res.status === 401) {
-    // Session missing/expired — drop the token and let the AuthGate re-render.
-    clearToken();
+    console.log('[client] 401 from', path, '— dispatching UNAUTHORIZED_EVENT');
     window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
   }
   if (!res.ok) {
@@ -39,6 +28,5 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 
 export async function logout(): Promise<void> {
   try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
-  clearToken();
   window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
 }

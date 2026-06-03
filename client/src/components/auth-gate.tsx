@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiFetch, setToken, UNAUTHORIZED_EVENT } from '@/lib/api'
+import { apiFetch, UNAUTHORIZED_EVENT } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -32,11 +32,13 @@ function AuthForm({ mode, onAuthed }: { mode: 'setup' | 'login'; onAuthed: () =>
     setBusy(true)
     setError('')
     try {
-      const res = await apiFetch<{ token: string }>(isSetup ? '/api/auth/setup' : '/api/auth/login', {
+      // Server sets the httpOnly session cookie on success. We don't get the
+      // token in JS (httpOnly), but we don't need to — the browser auto-sends
+      // it on every subsequent request.
+      await apiFetch(isSetup ? '/api/auth/setup' : '/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       })
-      setToken(res.token)
       onAuthed()
     } catch (err) {
       setError((err as Error).message)
@@ -95,8 +97,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const { data, isLoading, isError, refetch } = useQuery<AuthStatus>({
     queryKey: ['auth-status'],
+    // The server reads the session from the httpOnly cookie. The browser sends
+    // it automatically on same-origin requests, so we don't need to attach
+    // anything here.
     queryFn: () => apiFetch('/api/auth/status'),
     retry: false,
+    staleTime: 0,
   })
 
   useEffect(() => {
