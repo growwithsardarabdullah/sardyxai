@@ -4,8 +4,13 @@ import { z } from 'zod';
 import { getDb, getPersistence } from '../db/index.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
 import { getSupabaseAdmin } from '../db/supabase.js';
+import type { SessionUser } from '../services/auth.js';
 
 export const keysRouter = Router();
+
+function getUserEmail(req: Request): string {
+  return (req as Request & { user?: SessionUser }).user?.email ?? '';
+}
 
 // Active providers — must match providers/index.ts registrations + shared/types.ts Platform.
 // Moonshot and MiniMax direct integrations were dropped in V4. HuggingFace
@@ -29,11 +34,13 @@ const updateKeySchema = z.object({
   message: 'At least one of enabled or label must be provided',
 });
 
-// List all keys (masked)
-keysRouter.get('/', (_req: Request, res: Response) => {
+// List all keys (masked) — scoped to the authenticated user
+keysRouter.get('/', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
-  console.log(`[keys] GET / → ${rows.length} key(s) in storage`);
+  const rows = db.prepare('SELECT * FROM api_keys WHERE user_email = ? ORDER BY created_at DESC').all(email) as any[];
+  console.log(`[keys] GET / user=${email} → ${rows.length} key(s) in storage`);
 
   const keys = rows.map(row => {
     let maskedKey = '****';
@@ -69,6 +76,8 @@ keysRouter.get('/', (_req: Request, res: Response) => {
 
 // Add a key
 keysRouter.post('/', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const parsed = addKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
@@ -96,20 +105,19 @@ keysRouter.post('/', (req: Request, res: Response) => {
 
   const db = getDb();
   const result = db.prepare(`
-    INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
-    VALUES (?, ?, ?, ?, ?, 'unknown', 1)
-  `).run(platform, label ?? '', encrypted, iv, authTag);
+    INSERT INTO api_keys (user_email, platform, label, encrypted_key, iv, auth_tag, status, enabled)
+    VALUES (?, ?, ?, ?, ?, ?, 'unknown', 1)
+  `).run(email, platform, label ?? '', encrypted, iv, authTag);
 
   const newId = Number(result.lastInsertRowid);
-  console.log(`[keys] POST / platform=${platform} label='${label ?? ''}' keyLen=${key.length} → id=${newId} (encrypt round-trip OK)`);
+  console.log(`[keys] POST / user=${email} platform=${platform} label='${label ?? ''}' keyLen=${key.length} → id=${newId} (encrypt round-trip OK)`);
 
-  // Mirror to Supabase so the key survives a Vercel cold start. Local rowid
-  // is irrelevant on the Supabase side; we let it auto-assign.
+  // Mirror to Supabase so the key survives a Vercel cold start.
   getPersistence().enqueueWrite(async () => {
     const sb = getSupabaseAdmin();
     if (!sb) return;
     const { error } = await sb.from('api_keys').insert({
-      platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
+      user_email: email, platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
       status: 'unknown', enabled: true,
     });
     if (error) throw new Error(`api_keys insert: ${error.message}`);
@@ -138,6 +146,8 @@ const customProviderSchema = z.object({
 });
 
 keysRouter.post('/custom', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const parsed = customProviderSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
@@ -153,9 +163,9 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
 
   const db = getDb();
   const upsert = db.transaction(() => {
-    // One shared 'custom' key holds the endpoint URL. Reuse it across models;
-    // update its base_url/key when re-submitted.
-    const existing = db.prepare("SELECT id FROM api_keys WHERE platform = 'custom' LIMIT 1").get() as { id: number } | undefined;
+    // One shared 'custom' key holds the endpoint URL per user. Reuse it across
+    // models; update its base_url/key when re-submitted.
+    const existing = db.prepare("SELECT id FROM api_keys WHERE platform = 'custom' AND user_email = ? LIMIT 1").get(email) as { id: number } | undefined;
     let keyId: number;
     let upsertMode: 'insert' | 'update' = 'insert';
     let encrypted = '';
@@ -172,9 +182,9 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
       const enc = encrypt(rawKey);
       encrypted = enc.encrypted; iv = enc.iv; authTag = enc.authTag;
       const r = db.prepare(`
-        INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
-        VALUES ('custom', ?, ?, ?, ?, 'unknown', 1, ?)
-      `).run(label, encrypted, iv, authTag, baseUrl);
+        INSERT INTO api_keys (user_email, platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
+        VALUES (?, 'custom', ?, ?, ?, ?, 'unknown', 1, ?)
+      `).run(email, label, encrypted, iv, authTag, baseUrl);
       keyId = Number(r.lastInsertRowid);
     }
 
@@ -203,27 +213,24 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
 
   const { keyId, modelDbId, upsertMode, encrypted, iv, authTag, fallbackInserted } = upsert();
 
-  // Mirror custom provider state to Supabase. Custom keys can be re-submitted,
-  // so we don't know if this was a fresh insert or an update — branch on
-  // upsertMode to issue the right RPC.
+  // Mirror custom provider state to Supabase.
   getPersistence().enqueueWrite(async () => {
     const sb = getSupabaseAdmin();
     if (!sb) return;
     if (upsertMode === 'insert') {
       const { error } = await sb.from('api_keys').insert({
-        platform: 'custom', label, encrypted_key: encrypted, iv, auth_tag: authTag,
+        user_email: email, platform: 'custom', label, encrypted_key: encrypted, iv, auth_tag: authTag,
         status: 'unknown', enabled: true, base_url: baseUrl,
       });
       if (error) throw new Error(`api_keys insert: ${error.message}`);
     } else {
-      // Match by platform='custom' AND base_url — there's only ever one custom
-      // key row per endpoint, and re-submission updates it in place.
       const { error } = await sb.from('api_keys')
         .update({
           encrypted_key: encrypted, iv, auth_tag: authTag,
           status: 'unknown', enabled: true, base_url: baseUrl,
         })
         .eq('platform', 'custom')
+        .eq('user_email', email)
         .eq('base_url', baseUrl);
       if (error) throw new Error(`api_keys update: ${error.message}`);
     }
@@ -265,6 +272,8 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
 
 // Delete a key
 keysRouter.delete('/:id', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
@@ -272,10 +281,8 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  // Capture the row's identifying fields BEFORE deletion so we can match it
-  // on the Supabase side (where the local rowid is meaningless).
-  const row = db.prepare('SELECT platform, label FROM api_keys WHERE id = ?').get(id) as { platform: string; label: string } | undefined;
-  const result = db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+  const row = db.prepare('SELECT platform, label FROM api_keys WHERE id = ? AND user_email = ?').get(id, email) as { platform: string; label: string } | undefined;
+  const result = db.prepare('DELETE FROM api_keys WHERE id = ? AND user_email = ?').run(id, email);
 
   if (result.changes === 0) {
     res.status(404).json({ error: { message: 'Key not found' } });
@@ -289,7 +296,8 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
       const { error } = await sb.from('api_keys')
         .delete()
         .eq('platform', row.platform)
-        .eq('label', row.label);
+        .eq('label', row.label)
+        .eq('user_email', email);
       if (error) throw new Error(`api_keys delete: ${error.message}`);
     }, `api_keys:delete:${id}`);
   }
@@ -297,8 +305,10 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-// Toggle all keys for a platform
+// Toggle all keys for a platform (scoped to user)
 keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const platform = req.params.platform as string;
   if (!(PLATFORMS as readonly string[]).includes(platform)) {
     res.status(400).json({ error: { message: `Invalid platform '${platform}'` } });
@@ -312,25 +322,26 @@ keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
   }
 
   const db = getDb();
-  const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ?').run(enabled ? 1 : 0, platform);
+  const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ? AND user_email = ?').run(enabled ? 1 : 0, platform, email);
 
-  // Mirror platform-wide enable/disable. The Supabase mirror uses the same
-  // platform filter; we don't know which rows changed but the result is the
-  // same — every key for this platform ends up at the new value.
+  // Mirror platform-wide enable/disable.
   getPersistence().enqueueWrite(async () => {
     const sb = getSupabaseAdmin();
     if (!sb) return;
     const { error } = await sb.from('api_keys')
       .update({ enabled })
-      .eq('platform', platform);
+      .eq('platform', platform)
+      .eq('user_email', email);
     if (error) throw new Error(`api_keys platform-update: ${error.message}`);
   }, `api_keys:platform:${platform}`);
 
   res.json({ success: true, enabled, updatedKeys: result.changes });
 });
 
-// Update key (toggle enable/disable or edit label)
+// Update key (toggle enable/disable or edit label) — scoped to user
 keysRouter.patch('/:id', (req: Request, res: Response) => {
+  const email = getUserEmail(req);
+  if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
@@ -359,16 +370,15 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
   values.push(id);
 
   const db = getDb();
-  const result = db.prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const result = db.prepare(`UPDATE api_keys SET ${updates.join(', ')} WHERE id = ? AND user_email = ?`).run(...values, email);
 
   if (result.changes === 0) {
     res.status(404).json({ error: { message: 'Key not found' } });
     return;
   }
 
-  // Mirror individual update. Capture (platform, oldLabel) before the update
-  // so we can match the row on Supabase.
-  const oldRow = db.prepare('SELECT platform, label FROM api_keys WHERE id = ?').get(id) as { platform: string; label: string } | undefined;
+  // Mirror individual update. Capture (platform, oldLabel) before the update.
+  const oldRow = db.prepare('SELECT platform, label FROM api_keys WHERE id = ? AND user_email = ?').get(id, email) as { platform: string; label: string } | undefined;
   if (oldRow) {
     const updatePayload: Record<string, unknown> = {};
     if (enabled !== undefined) updatePayload.enabled = enabled;
@@ -379,7 +389,8 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
       const { error } = await sb.from('api_keys')
         .update(updatePayload)
         .eq('platform', oldRow.platform)
-        .eq('label', oldRow.label);
+        .eq('label', oldRow.label)
+        .eq('user_email', email);
       if (error) throw new Error(`api_keys update: ${error.message}`);
     }, `api_keys:update:${id}`);
   }

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, hasEnabledVisionModel, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
-import { getDb, getUnifiedApiKey, getPersistence } from '../db/index.js';
+import { getDb, getUnifiedApiKey, getUserForUnifiedKey, getPersistence } from '../db/index.js';
 import { getSupabaseAdmin } from '../db/supabase.js';
 import { contentToString, messageHasImage } from '../lib/content.js';
 
@@ -261,8 +261,15 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // loopback callers. Browser pages can reach localhost, so socket locality is
   // not a reliable authorization boundary.
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
-  if (!token || !timingSafeStringEqual(token, unifiedKey)) {
+  if (!token) {
+    res.status(401).json({
+      error: { message: 'Invalid API key', type: 'authentication_error' },
+    });
+    return;
+  }
+  // Look up which user owns this unified API key
+  const userEmail = getUserForUnifiedKey(token);
+  if (userEmail === null) {
     res.status(401).json({
       error: { message: 'Invalid API key', type: 'authentication_error' },
     });
@@ -381,7 +388,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage);
+      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, hasImage, userEmail);
     } catch (err: any) {
       // No more models available
       if (lastError) {

@@ -10,7 +10,7 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown, getCooldownDurationForLimit } from '../services/ratelimit.js';
-import { getUnifiedApiKey } from '../db/index.js';
+import { getUnifiedApiKey, getUserForUnifiedKey } from '../db/index.js';
 import { contentToString } from '../lib/content.js';
 import {
   isRetryableError,
@@ -250,9 +250,17 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
 
   // Same unified-key auth as the proxy (accepts Bearer or x-api-key).
   const token = extractApiToken(req);
-  const unifiedKey = getUnifiedApiKey();
-  if (!token || !timingSafeStringEqual(token, unifiedKey)) {
-    res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
+  if (!token) {
+    res.status(401).json({
+      error: { message: 'Invalid API key', type: 'authentication_error' },
+    });
+    return;
+  }
+  const userEmail = getUserForUnifiedKey(token);
+  if (userEmail === null) {
+    res.status(401).json({
+      error: { message: 'Invalid API key', type: 'authentication_error' },
+    });
     return;
   }
 
@@ -317,7 +325,7 @@ responsesRouter.post('/responses', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel, false, userEmail);
     } catch (err: any) {
       const status = lastError ? 429 : (err.status ?? 503);
       const message = lastError

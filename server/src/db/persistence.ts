@@ -160,6 +160,7 @@ interface SupabaseUser {
 }
 interface SupabaseApiKey {
   id: number;
+  user_email: string;
   platform: string;
   label: string;
   encrypted_key: string;
@@ -197,6 +198,7 @@ interface SupabaseFallback {
 }
 interface SupabaseSetting {
   key: string;
+  user_email: string;
   value: string;
 }
 
@@ -270,16 +272,15 @@ async function hydrateFromSupabase(supabase: SupabaseClient): Promise<void> {
   //    uses rowid. Insert blindly; if a key with the same platform+label exists
   //    already, the user will see it twice until dedup is added. Acceptable for
   //    v1: in practice the local DB is empty on cold start, so this just adds
-  //    the rows. If a duplicate already exists, the dedup happens at the app
-  //    level (e.g. by the health checker flipping status).
+  //    the rows.
   const insertKey = db.prepare(`
     INSERT INTO api_keys
-      (platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (user_email, platform, label, encrypted_key, iv, auth_tag, status, enabled, base_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const k of keys) {
     insertKey.run(
-      k.platform, k.label ?? '', k.encrypted_key, k.iv, k.auth_tag,
+      k.user_email ?? '', k.platform, k.label ?? '', k.encrypted_key, k.iv, k.auth_tag,
       k.status ?? 'unknown', truthyToInt(k.enabled), k.base_url,
     );
   }
@@ -304,11 +305,11 @@ async function hydrateFromSupabase(supabase: SupabaseClient): Promise<void> {
 
   // 5) Settings — UPSERT so re-hydration overwrites with the durable value.
   const insertSetting = db.prepare(`
-    INSERT INTO settings (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    INSERT INTO settings (key, user_email, value) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, user_email = excluded.user_email
   `);
   for (const s of settings) {
-    insertSetting.run(s.key, s.value);
+    insertSetting.run(s.key, s.user_email ?? '', s.value);
   }
 
   console.log(

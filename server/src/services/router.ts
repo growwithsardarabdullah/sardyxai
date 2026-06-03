@@ -340,7 +340,7 @@ function orderChain(chain: ChainRow[], strategy: RoutingStrategy): ChainRow[] {
  * @param preferredModelDbId - try this model first (sticky session)
  * @param requireVision - only consider models that accept image input (#118)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision = false): RouteResult {
+export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number, requireVision = false, userEmail?: string): RouteResult {
   const db = getDb();
 
   const strategy = getRoutingStrategy();
@@ -378,9 +378,15 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     if (!provider) continue;
 
     // Get enabled keys that have not already failed validation or decryption.
-    const keys = db.prepare(
-      "SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')"
-    ).all(entry.platform) as KeyRow[];
+    // When userEmail is provided and non-empty, filter to that user's keys only.
+    // Empty/undefined means no user scope — return all keys (legacy compat).
+    const keys = (userEmail && userEmail !== '')
+      ? db.prepare(
+          "SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown') AND user_email = ?"
+        ).all(entry.platform, userEmail) as KeyRow[]
+      : db.prepare(
+          "SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status IN ('healthy', 'unknown')"
+        ).all(entry.platform) as KeyRow[];
 
     if (keys.length === 0) continue;
 
