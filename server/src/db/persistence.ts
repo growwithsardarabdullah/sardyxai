@@ -26,6 +26,10 @@ export interface PersistenceHandle {
   hydrateIfNeeded(): Promise<void>;
   enqueueWrite(job: () => Promise<void>, label?: string): void;
   flush(): Promise<void>;
+  /** Await the next drain cycle. Returns true if all queued writes succeeded. */
+  flushImmediate(): Promise<{ ok: boolean; queueLength: number }>;
+  /** Diagnostics: current queue depth and worker state. */
+  stats(): { queueLength: number; workerBusy: boolean; hydrated: boolean; isSupabase: boolean };
 }
 
 interface QueuedJob {
@@ -57,6 +61,8 @@ export function createPersistence(): PersistenceHandle {
       async hydrateIfNeeded() { /* no-op */ },
       enqueueWrite() { /* no-op */ },
       async flush() { /* no-op */ },
+      async flushImmediate() { return { ok: true, queueLength: 0 }; },
+      stats() { return { queueLength: 0, workerBusy: false, hydrated: true, isSupabase: false }; },
     };
   }
 
@@ -79,17 +85,17 @@ export function createPersistence(): PersistenceHandle {
       hydrated = true; // mark first so concurrent calls don't repeat
       try {
         await hydrateFromSupabase(supabase);
-        // Start the worker after hydration so we don't race with hydrate jobs.
-        if (!workerInterval) {
-          workerInterval = setInterval(() => { drain().catch(() => {}); }, WORKER_INTERVAL_MS);
-          // Don't keep the process alive just for the queue drainer.
-          if (typeof workerInterval === 'object' && workerInterval && 'unref' in workerInterval) {
-            (workerInterval as any).unref();
-          }
-        }
       } catch (err) {
         hydrated = false; // allow retry on next call
         console.error(`[persistence] Supabase unreachable: ${(err as Error).message}. Continuing in offline mode.`);
+      }
+      // Always start the worker — even if hydration failed — so queued writes
+      // can drain once Supabase becomes reachable again.
+      if (!workerInterval) {
+        workerInterval = setInterval(() => { drain().catch(() => {}); }, WORKER_INTERVAL_MS);
+        if (typeof workerInterval === 'object' && workerInterval && 'unref' in workerInterval) {
+          (workerInterval as any).unref();
+        }
       }
     },
 
@@ -112,6 +118,22 @@ export function createPersistence(): PersistenceHandle {
       while (queue.length > 0) {
         await drain();
       }
+    },
+
+    async flushImmediate() {
+      const qLen = queue.length;
+      if (qLen === 0) return { ok: true, queueLength: 0 };
+      // Wait for the current drain cycle (worker picks up within 1s).
+      // Use a polling approach with a 6s timeout.
+      const deadline = Date.now() + 6000;
+      while (queue.length > 0 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return { ok: queue.length === 0, queueLength: queue.length };
+    },
+
+    stats() {
+      return { queueLength: queue.length, workerBusy, hydrated, isSupabase: true };
     },
   };
 

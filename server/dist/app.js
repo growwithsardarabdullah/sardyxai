@@ -89,6 +89,41 @@ export function createApp() {
     app.get('/api/ping', (_req, res) => {
         res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
+    // Debug: persistence status (admin only)
+    app.get('/api/debug/persistence', requireAuth, async (_req, res) => {
+        const { getPersistence } = await import('./db/index.js');
+        const { getSupabaseAdmin, verifySupabaseConnection } = await import('./db/supabase.js');
+        const persistence = getPersistence();
+        const stats = persistence.stats();
+        const sb = getSupabaseAdmin();
+        let supabaseTest = { ok: false };
+        if (sb) {
+            try {
+                const { error } = await sb.from('api_keys').select('id', { count: 'exact', head: true });
+                if (error) {
+                    supabaseTest = { ok: false, error: `${error.message} (code: ${error.code})` };
+                }
+                else {
+                    supabaseTest = { ok: true };
+                }
+            }
+            catch (err) {
+                supabaseTest = { ok: false, error: err.message };
+            }
+        }
+        res.json({
+            persistence: stats,
+            supabaseAdminAvailable: !!sb,
+            supabaseTest,
+            envVars: {
+                SUPABASE_URL: !!process.env.SUPABASE_URL,
+                SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,
+                SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+                ENCRYPTION_KEY: !!process.env.ENCRYPTION_KEY,
+                SESSION_SECRET: !!process.env.SESSION_SECRET,
+            },
+        });
+    });
     // Error handler (for API routes)
     app.use(errorHandler);
     // Serve client static files (after API error handler)

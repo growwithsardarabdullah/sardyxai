@@ -75,7 +75,7 @@ keysRouter.get('/', (req: Request, res: Response) => {
 });
 
 // Add a key
-keysRouter.post('/', (req: Request, res: Response) => {
+keysRouter.post('/', async (req: Request, res: Response) => {
   const email = getUserEmail(req);
   if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const parsed = addKeySchema.safeParse(req.body);
@@ -112,23 +112,35 @@ keysRouter.post('/', (req: Request, res: Response) => {
   const newId = Number(result.lastInsertRowid);
   console.log(`[keys] POST / user=${email} platform=${platform} label='${label ?? ''}' keyLen=${key.length} → id=${newId} (encrypt round-trip OK)`);
 
-  // Mirror to Supabase so the key survives a Vercel cold start.
-  getPersistence().enqueueWrite(async () => {
-    const sb = getSupabaseAdmin();
-    if (!sb) {
-      console.error(`[keys] Supabase admin client unavailable — key ${newId} will NOT persist across cold starts`);
-      return;
+  // Mirror to Supabase SYNCHRONOUSLY so we can report persistence status to the user.
+  let persisted = false;
+  let persistError: string | null = null;
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    persistError = 'Supabase admin client unavailable — key saved locally only, will NOT survive cold start';
+    console.error(`[keys] ${persistError}`);
+  } else {
+    try {
+      const insertPromise = sb.from('api_keys').insert({
+        user_email: email, platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
+        status: 'unknown', enabled: true,
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Supabase write timeout after 5000ms')), 5000),
+      );
+      const { error } = await Promise.race([insertPromise, timeoutPromise]) as any;
+      if (error) {
+        persistError = `Supabase INSERT FAILED: ${error.message} (code: ${error.code})`;
+        console.error(`[keys] ${persistError}`);
+      } else {
+        persisted = true;
+        console.log(`[keys] Supabase INSERT OK for id=${newId} platform=${platform} user=${email}`);
+      }
+    } catch (err) {
+      persistError = `Supabase write error: ${(err as Error).message}`;
+      console.error(`[keys] ${persistError}`);
     }
-    const { error } = await sb.from('api_keys').insert({
-      user_email: email, platform, label: label ?? '', encrypted_key: encrypted, iv, auth_tag: authTag,
-      status: 'unknown', enabled: true,
-    });
-    if (error) {
-      console.error(`[keys] Supabase INSERT FAILED for id=${newId} platform=${platform}: ${error.message} (code: ${error.code})`);
-      throw new Error(`api_keys insert: ${error.message}`);
-    }
-    console.log(`[keys] Supabase INSERT OK for id=${newId} platform=${platform} user=${email}`);
-  }, `api_keys:insert:${newId}`);
+  }
 
   res.status(201).json({
     id: newId,
@@ -137,6 +149,8 @@ keysRouter.post('/', (req: Request, res: Response) => {
     maskedKey: maskKey(key),
     status: 'unknown',
     enabled: true,
+    persisted,
+    ...(persistError ? { persistWarning: persistError } : {}),
   });
 });
 
@@ -152,7 +166,7 @@ const customProviderSchema = z.object({
   label: z.string().optional(),
 });
 
-keysRouter.post('/custom', (req: Request, res: Response) => {
+keysRouter.post('/custom', async (req: Request, res: Response) => {
   const email = getUserEmail(req);
   if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const parsed = customProviderSchema.safeParse(req.body);
@@ -220,44 +234,61 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
 
   const { keyId, modelDbId, upsertMode, encrypted, iv, authTag, fallbackInserted } = upsert();
 
-  // Mirror custom provider state to Supabase.
-  getPersistence().enqueueWrite(async () => {
-    const sb = getSupabaseAdmin();
-    if (!sb) return;
-    if (upsertMode === 'insert') {
-      const { error } = await sb.from('api_keys').insert({
-        user_email: email, platform: 'custom', label, encrypted_key: encrypted, iv, auth_tag: authTag,
-        status: 'unknown', enabled: true, base_url: baseUrl,
-      });
-      if (error) throw new Error(`api_keys insert: ${error.message}`);
-    } else {
-      const { error } = await sb.from('api_keys')
-        .update({
-          encrypted_key: encrypted, iv, auth_tag: authTag,
+  // Mirror custom provider state to Supabase SYNCHRONOUSLY.
+  let persisted = false;
+  let persistError: string | null = null;
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    persistError = 'Supabase admin client unavailable — data saved locally only';
+    console.error(`[keys] ${persistError}`);
+  } else {
+    try {
+      let writePromise: Promise<any>;
+      if (upsertMode === 'insert') {
+        writePromise = sb.from('api_keys').insert({
+          user_email: email, platform: 'custom', label, encrypted_key: encrypted, iv, auth_tag: authTag,
           status: 'unknown', enabled: true, base_url: baseUrl,
-        })
-        .eq('platform', 'custom')
-        .eq('user_email', email)
-        .eq('base_url', baseUrl);
-      if (error) throw new Error(`api_keys update: ${error.message}`);
+        });
+      } else {
+        writePromise = sb.from('api_keys')
+          .update({
+            encrypted_key: encrypted, iv, auth_tag: authTag,
+            status: 'unknown', enabled: true, base_url: baseUrl,
+          })
+          .eq('platform', 'custom')
+          .eq('user_email', email)
+          .eq('base_url', baseUrl);
+      }
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Supabase write timeout after 5000ms')), 5000),
+      );
+      const { error } = await Promise.race([writePromise, timeoutPromise]) as any;
+      if (error) {
+        persistError = `Supabase ${upsertMode} FAILED: ${error.message} (code: ${error.code})`;
+        console.error(`[keys] ${persistError}`);
+      } else {
+        persisted = true;
+        console.log(`[keys] Supabase ${upsertMode} OK for custom key user=${email}`);
+      }
+    } catch (err) {
+      persistError = `Supabase write error: ${(err as Error).message}`;
+      console.error(`[keys] ${persistError}`);
     }
-  }, `api_keys:custom:${upsertMode}`);
+  }
 
   if (fallbackInserted) {
-    // Custom model appended to the chain — mirror to Supabase. The Supabase
-    // fallback_config.model_db_id differs from the local one, so we look it
-    // up by (platform, model_id) and let the resolver handle the ID remap.
+    // Custom model appended to the chain — mirror to Supabase asynchronously.
     getPersistence().enqueueWrite(async () => {
-      const sb = getSupabaseAdmin();
-      if (!sb) return;
-      const { data: m } = await sb.from('models')
+      const sbWrite = getSupabaseAdmin();
+      if (!sbWrite) return;
+      const { data: m } = await sbWrite.from('models')
         .select('id')
         .eq('platform', 'custom')
         .eq('model_id', modelId)
         .single();
-      if (!m) return; // mirror wasn't run yet (race); next cold start will reconcile
+      if (!m) return;
       const localPriority = (db.prepare('SELECT priority FROM fallback_config WHERE model_db_id = ?').get(modelDbId) as { priority: number }).priority;
-      const { error } = await sb.from('fallback_config').upsert(
+      const { error } = await sbWrite.from('fallback_config').upsert(
         { model_db_id: m.id, priority: localPriority, enabled: true },
         { onConflict: 'model_db_id' },
       );
@@ -274,11 +305,13 @@ keysRouter.post('/custom', (req: Request, res: Response) => {
     model: modelId,
     displayName,
     maskedKey: maskKey(rawKey),
+    persisted,
+    ...(persistError ? { persistWarning: persistError } : {}),
   });
 });
 
 // Delete a key
-keysRouter.delete('/:id', (req: Request, res: Response) => {
+keysRouter.delete('/:id', async (req: Request, res: Response) => {
   const email = getUserEmail(req);
   if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const id = parseInt(req.params.id as string, 10);
@@ -296,24 +329,38 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
     return;
   }
 
+  let deleted = true;
   if (row) {
-    getPersistence().enqueueWrite(async () => {
-      const sb = getSupabaseAdmin();
-      if (!sb) return;
-      const { error } = await sb.from('api_keys')
-        .delete()
-        .eq('platform', row.platform)
-        .eq('label', row.label)
-        .eq('user_email', email);
-      if (error) throw new Error(`api_keys delete: ${error.message}`);
-    }, `api_keys:delete:${id}`);
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      try {
+        const deletePromise = sb.from('api_keys')
+          .delete()
+          .eq('platform', row.platform)
+          .eq('label', row.label)
+          .eq('user_email', email);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Supabase delete timeout after 5000ms')), 5000),
+        );
+        const { error } = await Promise.race([deletePromise, timeoutPromise]) as any;
+        if (error) {
+          console.error(`[keys] Supabase DELETE FAILED for id=${id}: ${error.message} (code: ${error.code})`);
+          deleted = false;
+        } else {
+          console.log(`[keys] Supabase DELETE OK for id=${id} user=${email}`);
+        }
+      } catch (err) {
+        console.error(`[keys] Supabase delete error for id=${id}: ${(err as Error).message}`);
+        deleted = false;
+      }
+    }
   }
 
-  res.json({ success: true });
+  res.json({ success: true, deleted });
 });
 
 // Toggle all keys for a platform (scoped to user)
-keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
+keysRouter.patch('/platform/:platform', async (req: Request, res: Response) => {
   const email = getUserEmail(req);
   if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const platform = req.params.platform as string;
@@ -331,22 +378,35 @@ keysRouter.patch('/platform/:platform', (req: Request, res: Response) => {
   const db = getDb();
   const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE platform = ? AND user_email = ?').run(enabled ? 1 : 0, platform, email);
 
-  // Mirror platform-wide enable/disable.
-  getPersistence().enqueueWrite(async () => {
-    const sb = getSupabaseAdmin();
-    if (!sb) return;
-    const { error } = await sb.from('api_keys')
-      .update({ enabled })
-      .eq('platform', platform)
-      .eq('user_email', email);
-    if (error) throw new Error(`api_keys platform-update: ${error.message}`);
-  }, `api_keys:platform:${platform}`);
+  // Mirror platform-wide enable/disable SYNCHRONOUSLY.
+  let synced = false;
+  const sb = getSupabaseAdmin();
+  if (sb) {
+    try {
+      const updatePromise = sb.from('api_keys')
+        .update({ enabled })
+        .eq('platform', platform)
+        .eq('user_email', email);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Supabase update timeout after 5000ms')), 5000),
+      );
+      const { error } = await Promise.race([updatePromise, timeoutPromise]) as any;
+      if (error) {
+        console.error(`[keys] Supabase platform-update FAILED for ${platform}: ${error.message}`);
+      } else {
+        synced = true;
+        console.log(`[keys] Supabase platform-update OK for ${platform} user=${email}`);
+      }
+    } catch (err) {
+      console.error(`[keys] Supabase platform-update error for ${platform}: ${(err as Error).message}`);
+    }
+  }
 
-  res.json({ success: true, enabled, updatedKeys: result.changes });
+  res.json({ success: true, enabled, updatedKeys: result.changes, synced });
 });
 
 // Update key (toggle enable/disable or edit label) — scoped to user
-keysRouter.patch('/:id', (req: Request, res: Response) => {
+keysRouter.patch('/:id', async (req: Request, res: Response) => {
   const email = getUserEmail(req);
   if (!email) { res.status(401).json({ error: { message: 'Authentication required' } }); return; }
   const id = parseInt(req.params.id as string, 10);
@@ -384,25 +444,38 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
     return;
   }
 
-  // Mirror individual update. Capture (platform, oldLabel) before the update.
+  // Mirror individual update SYNCHRONOUSLY. Capture (platform, oldLabel) before the update.
+  let synced = false;
   const oldRow = db.prepare('SELECT platform, label FROM api_keys WHERE id = ? AND user_email = ?').get(id, email) as { platform: string; label: string } | undefined;
   if (oldRow) {
     const updatePayload: Record<string, unknown> = {};
     if (enabled !== undefined) updatePayload.enabled = enabled;
     if (label !== undefined) updatePayload.label = label;
-    getPersistence().enqueueWrite(async () => {
-      const sb = getSupabaseAdmin();
-      if (!sb) return;
-      const { error } = await sb.from('api_keys')
-        .update(updatePayload)
-        .eq('platform', oldRow.platform)
-        .eq('label', oldRow.label)
-        .eq('user_email', email);
-      if (error) throw new Error(`api_keys update: ${error.message}`);
-    }, `api_keys:update:${id}`);
+    const sb = getSupabaseAdmin();
+    if (sb) {
+      try {
+        const updatePromise = sb.from('api_keys')
+          .update(updatePayload)
+          .eq('platform', oldRow.platform)
+          .eq('label', oldRow.label)
+          .eq('user_email', email);
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Supabase update timeout after 5000ms')), 5000),
+        );
+        const { error } = await Promise.race([updatePromise, timeoutPromise]) as any;
+        if (error) {
+          console.error(`[keys] Supabase update FAILED for id=${id}: ${error.message}`);
+        } else {
+          synced = true;
+          console.log(`[keys] Supabase update OK for id=${id} user=${email}`);
+        }
+      } catch (err) {
+        console.error(`[keys] Supabase update error for id=${id}: ${(err as Error).message}`);
+      }
+    }
   }
 
-  const response: Record<string, unknown> = { success: true };
+  const response: Record<string, unknown> = { success: true, synced };
   if (enabled !== undefined) response.enabled = enabled;
   if (label !== undefined) response.label = label;
   res.json(response);
