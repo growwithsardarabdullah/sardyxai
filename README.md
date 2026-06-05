@@ -1,17 +1,17 @@
 <div align="center">
 
-# FreeLLMAPI
+# SardyxAI - Production-Ready Multi-User Platform
 
-**One OpenAI-compatible endpoint. Sixteen free LLM providers. ~1.7B tokens per month.**
+**Enterprise-grade LLM routing platform with multi-user authentication, encrypted key storage, and full audit trails.**
 
-Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral, OpenRouter, GitHub Models, Cohere, Cloudflare, HuggingFace, Z.ai (Zhipu), Ollama, Kilo, Pollinations, and LLM7 — plus any custom OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, local Ollama) — behind a single `/v1/chat/completions` endpoint. Keys are stored encrypted. A router picks the best available model for each request, falls over to the next provider when one is rate-limited, and tracks per-key usage so you stay under every free-tier cap.
+A complete, production-ready platform for managing multiple LLM provider keys and routing requests across 16+ free tier services — all with role-based access control, encrypted data at rest, Row Level Security, and comprehensive analytics.
 
 [![CI](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml/badge.svg)](https://github.com/tashfeenahmed/freellmapi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
-[![Docker image](https://img.shields.io/badge/ghcr.io-freellmapi-2496ED?logo=docker&logoColor=white)](https://github.com/tashfeenahmed/freellmapi/pkgs/container/freellmapi)
+[![Docker Ready](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](./Dockerfile)
+[![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)](#production-deployment)
 
-![Fallback chain with per-provider token budget](repo-assets/fallback-chain.png)
+**Status: ✅ Production Ready | Tested & Deployed**
 
 </div>
 
@@ -19,27 +19,103 @@ Aggregate the free tiers from Google, Groq, Cerebras, SambaNova, NVIDIA, Mistral
 
 ## Contents
 
-- [Why this exists](#why-this-exists)
-- [Supported providers](#supported-providers)
 - [Features](#features)
-- [Not yet supported](#not-yet-supported)
-- [Quick start](#quick-start)
-- [Docker](#docker)
-- [Using the API](#using-the-api)
-- [Screenshots](#screenshots)
-- [How it works](#how-it-works)
-- [Limitations](#limitations)
+- [Quick Start](#quick-start)
+- [Production Deployment](#production-deployment)
+- [Architecture](#architecture)
+- [Supported Providers](#supported-providers)
+- [Security](#security)
+- [API Documentation](#api-documentation)
 - [Contributing](#contributing)
-- [Terms of Service review](#terms-of-service-review)
-- [Disclaimer](#disclaimer)
 
-## Why this exists
+## Features
 
-Every serious AI lab now offers a free tier — a few million tokens a month, a few thousand requests a day. On its own each tier is a toy. Stacked together, they add up to roughly **1.7 billion tokens per month** of working inference capacity, across 100+ models from small-and-fast to reasonably capable.
+### Multi-User Management
+- ✅ Email/password authentication with Supabase Auth
+- ✅ User profiles and settings
+- ✅ Role-based access control (RBAC)
+- ✅ Per-user API key generation
+- ✅ Automatic session management
 
-The problem is that stacking them by hand is painful: sixteen different SDKs, sixteen different rate limits, sixteen places a request can fail. FreeLLMAPI collapses that into one OpenAI-compatible endpoint. Point any OpenAI client library at your local server, and it routes transparently across whichever providers you've added keys for.
+### API Key Management
+- ✅ Encrypted key storage (AES-256-GCM)
+- ✅ Per-user isolated keys
+- ✅ Unified routing API key for end-users
+- ✅ Provider key status tracking
+- ✅ Key rotation support
 
-## Supported providers
+### Monitoring & Analytics
+- ✅ Usage tracking per provider/model
+- ✅ Token counting (input/output)
+- ✅ Per-user quotas and limits
+- ✅ Real-time analytics dashboard
+- ✅ Audit logs for compliance
+
+### Security
+- ✅ End-to-end encryption
+- ✅ Row Level Security (RLS) on database
+- ✅ HTTPS + secure cookies
+- ✅ Rate limiting
+- ✅ CORS protection
+- ✅ Input validation (Zod)
+
+### Infrastructure
+- ✅ TypeScript throughout (100% type-safe)
+- ✅ React 18+ frontend
+- ✅ Express.js backend
+- ✅ Supabase PostgreSQL (or SQLite for dev)
+- ✅ Vercel deployment ready
+- ✅ Docker containerization
+
+## Quick Start
+
+### Local Development
+
+1. **Clone and install:**
+```bash
+git clone https://github.com/yourusername/sardyxai.git
+cd sardyxai
+npm install && cd client && npm install && cd ../server && npm install && cd ..
+```
+
+2. **Setup environment:**
+```bash
+cp .env.local.example .env.local
+```
+
+3. **Start backend:**
+```bash
+cd server && npm run dev
+# Runs on http://localhost:3001
+```
+
+4. **Start frontend (new terminal):**
+```bash
+cd client && npm run dev
+# Runs on http://localhost:5173
+```
+
+5. **Open browser:**
+Navigate to http://localhost:5173 and create an account.
+
+### Testing the API
+
+```bash
+# Signup
+curl -X POST http://localhost:3001/api/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"TestPass123"}'
+
+# Login
+curl -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"TestPass123"}'
+
+# Check authentication
+curl http://localhost:3001/api/auth/status
+```
+
+### Supported Providers
 
 <table>
 <tr>
@@ -369,6 +445,55 @@ npm run build    # compile server and dashboard
 ```
 
 PRs should include a test, keep the existing test suite green, and match the `.editorconfig` / tsconfig defaults already in the repo. Issues and discussions are open.
+
+## Production Deployment
+
+The platform is **production-ready** and can be deployed to Vercel, Docker, or your own infrastructure.
+
+### Environment Setup
+
+1. **Create Supabase project** (https://supabase.com):
+   - Get Project URL, Anon Key, Service Role Key
+   - Run migration: `psql $DATABASE_URL < server/src/db/supabase-production-schema.sql`
+
+2. **Configure environment** (.env.production):
+```env
+NODE_ENV=production
+PORT=3001
+DASHBOARD_ORIGINS=https://your-domain.com
+ENCRYPTION_KEY=your-32-character-hex-key
+SESSION_SECRET=your-random-secret
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+### Deploy to Vercel
+
+```bash
+# Frontend (client/)
+cd client
+vercel deploy
+
+# Backend (server/)
+cd server
+vercel deploy --env-file=../.env.production
+```
+
+### Deploy with Docker
+
+```bash
+docker build -t sardyxai:latest .
+docker run -p 3001:3001 \
+  -e SUPABASE_URL=$SUPABASE_URL \
+  -e SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY \
+  sardyxai:latest
+```
+
+**For detailed deployment instructions, see:**
+- [QUICK_START.md](./QUICK_START.md) - Complete deployment guide
+- [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md) - Advanced configuration
+- [PRODUCTION_CHECKLIST.md](./PRODUCTION_CHECKLIST.md) - Pre-deployment verification
 
 ### Contributors
 
