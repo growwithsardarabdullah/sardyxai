@@ -158,23 +158,40 @@ export function createApp() {
     // Error handler (for API routes)
     app.use(errorHandler);
     // Serve client static files (after API error handler)
-    const clientDist = path.resolve(__dirname, '../../client/dist');
-    const clientIndexPath = path.join(clientDist, 'index.html');
-    // Check if client dist exists before serving
-    if (fs.existsSync(clientDist)) {
-        app.use(express.static(clientDist));
+    // Try multiple path resolutions for compatibility with different environments
+    const possibleClientDist = [
+        path.resolve(__dirname, '../../client/dist'),
+        path.resolve(process.cwd(), 'client/dist'),
+        path.join(process.cwd(), '..', 'client', 'dist'),
+    ];
+    let clientDist = null;
+    let clientIndexPath = null;
+    for (const possiblePath of possibleClientDist) {
+        if (fs.existsSync(possiblePath)) {
+            clientDist = possiblePath;
+            clientIndexPath = path.join(possiblePath, 'index.html');
+            console.log(`[app] Using client dist from: ${clientDist}`);
+            break;
+        }
     }
-    else {
-        console.warn('[app] Client dist directory not found at:', clientDist);
+    if (!clientDist) {
+        console.warn('[app] Client dist directory not found at any of:', possibleClientDist);
+    }
+    // Check if client dist exists before serving
+    if (clientDist && fs.existsSync(clientDist)) {
+        app.use(express.static(clientDist, {
+            maxAge: '1d',
+            etag: false,
+        }));
     }
     // SPA fallback — serve index.html for non-API routes
     app.use((req, res, next) => {
         if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
-            next();
+            res.status(404).json({ error: 'Not found' });
             return;
         }
         // Try to serve index.html if it exists
-        if (fs.existsSync(clientIndexPath)) {
+        if (clientIndexPath && fs.existsSync(clientIndexPath)) {
             res.sendFile(clientIndexPath);
         }
         else {
