@@ -160,14 +160,16 @@ export function createApp() {
     // Serve client static files (after API error handler)
     // Try multiple path resolutions for compatibility with different environments
     const possibleClientDist = [
-        // Standard paths
+        // Vercel-specific path (where public directory gets served from)
+        './',
+        'client/dist',
+        'client/dist/',
+        '/var/task/client/dist',
+        // Standard relative paths
         path.resolve(__dirname, '../../client/dist'),
         path.resolve(process.cwd(), 'client/dist'),
         path.join(process.cwd(), '..', 'client', 'dist'),
-        // Vercel specific paths
-        '/var/task/client/dist',
-        path.join('/var/task', 'client', 'dist'),
-        // Common alternatives
+        // Alternative paths
         path.resolve(__dirname, '../../../client/dist'),
         path.resolve(__dirname, '../../../../client/dist'),
     ];
@@ -177,12 +179,29 @@ export function createApp() {
     console.log(`[app] process.cwd(): ${process.cwd()}`);
     for (const possiblePath of possibleClientDist) {
         const exists = fs.existsSync(possiblePath);
-        console.log(`[app] Checking ${possiblePath}: ${exists}`);
-        if (exists) {
-            clientDist = possiblePath;
-            clientIndexPath = path.join(possiblePath, 'index.html');
-            console.log(`[app] ✓ Found client dist at: ${clientDist}`);
-            break;
+        const isDir = exists && fs.statSync(possiblePath).isDirectory();
+        console.log(`[app] Checking ${possiblePath}: exists=${exists}, isDir=${isDir}`);
+        if (isDir) {
+            const assetsDirExists = fs.existsSync(path.join(possiblePath, 'assets'));
+            const indexHtmlExists = fs.existsSync(path.join(possiblePath, 'index.html'));
+            console.log(`[app]   -> assets dir: ${assetsDirExists}, index.html: ${indexHtmlExists}`);
+            if (assetsDirExists && indexHtmlExists) {
+                clientDist = possiblePath;
+                clientIndexPath = path.join(possiblePath, 'index.html');
+                console.log(`[app] ✓ Found complete client dist at: ${clientDist}`);
+                break;
+            }
+        }
+    }
+    if (!clientDist) {
+        console.warn('[app] ✗ Client dist directory not found at any of:', possibleClientDist);
+        // Try to list what we have in the current directory
+        try {
+            const cwdContents = fs.readdirSync(process.cwd());
+            console.log('[app] Contents of cwd:', cwdContents.slice(0, 20).join(', '));
+        }
+        catch (e) {
+            console.error('[app] Could not list cwd:', e);
         }
     }
     if (!clientDist) {
