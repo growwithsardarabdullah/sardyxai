@@ -9,8 +9,7 @@
   "functions": {
     "api/index.js": {
       "runtime": "nodejs20.x",
-      "maxDuration": 60,
-      "includeFiles": ["client/dist/**", "server/dist/**"]
+      "maxDuration": 60
     }
   },
   "rewrites": [
@@ -21,14 +20,6 @@
     {
       "source": "/v1/(.*)",
       "destination": "/api/index.js"
-    },
-    {
-      "source": "/(playground|keys|analytics|settings|dashboard|auth)/?$",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/(?!assets|favicon|icons|index\\.html|[^/]*\\.).*",
-      "destination": "/index.html"
     }
   ]
 }

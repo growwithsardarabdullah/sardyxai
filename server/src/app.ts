@@ -294,6 +294,12 @@ export function createApp() {
       return;
     }
     
+    // Don't intercept static files (those with extensions or in /assets)
+    if (req.path.includes('.') || req.path.startsWith('/assets/')) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+
     // Try to serve index.html if it exists
     if (clientIndexPath && fs.existsSync(clientIndexPath)) {
       console.log(`[app] Serving SPA fallback (index.html) for: ${req.path}`);
