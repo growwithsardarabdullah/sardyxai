@@ -173,31 +173,48 @@ export function createApp() {
     path.resolve(__dirname, '../../client/dist'),
     path.resolve(process.cwd(), 'client/dist'),
     path.join(process.cwd(), '..', 'client', 'dist'),
+    '/var/task/client/dist', // Vercel specific
   ];
   
   let clientDist: string | null = null;
   let clientIndexPath: string | null = null;
   
+  console.log(`[app] __dirname: ${__dirname}`);
+  console.log(`[app] process.cwd(): ${process.cwd()}`);
+  
   for (const possiblePath of possibleClientDist) {
-    if (fs.existsSync(possiblePath)) {
+    const exists = fs.existsSync(possiblePath);
+    console.log(`[app] Checking ${possiblePath}: ${exists}`);
+    if (exists) {
       clientDist = possiblePath;
       clientIndexPath = path.join(possiblePath, 'index.html');
-      console.log(`[app] Using client dist from: ${clientDist}`);
+      console.log(`[app] ✓ Found client dist at: ${clientDist}`);
       break;
     }
   }
   
   if (!clientDist) {
-    console.warn('[app] Client dist directory not found at any of:', possibleClientDist);
+    console.warn('[app] ✗ Client dist directory not found at any of:', possibleClientDist);
+    // Try to list what we have in the current directory
+    try {
+      const cwdContents = fs.readdirSync(process.cwd());
+      console.log('[app] Contents of cwd:', cwdContents.slice(0, 20));
+    } catch (e) {
+      console.error('[app] Could not list cwd:', e);
+    }
   }
   
   // Check if client dist exists before serving
   if (clientDist && fs.existsSync(clientDist)) {
+    console.log(`[app] Registering express.static for: ${clientDist}`);
     app.use(express.static(clientDist, { 
       maxAge: '1d',
       etag: false,
       fallthrough: true, // Continue to next middleware if file not found
+      dotfiles: 'ignore', // Ignore .gitkeep and other dot files
     }));
+  } else {
+    console.warn('[app] Skipping express.static - client dist not accessible');
   }
   
   // SPA fallback — serve index.html for non-API routes (only if file wasn't found by express.static)
@@ -211,14 +228,17 @@ export function createApp() {
     // Don't intercept requests for files with extensions (except .html)
     const ext = path.extname(req.path);
     if (ext && ext !== '.html') {
+      console.warn(`[app] Rejecting file request (extension: ${ext}): ${req.path}`);
       res.status(404).send('Not found');
       return;
     }
     
     // Try to serve index.html if it exists
     if (clientIndexPath && fs.existsSync(clientIndexPath)) {
+      console.log(`[app] Serving SPA fallback for: ${req.path}`);
       res.sendFile(clientIndexPath);
     } else {
+      console.warn(`[app] index.html not found at: ${clientIndexPath}`);
       res.status(200).json({ message: 'API is running. Client UI not available.' });
     }
   });
