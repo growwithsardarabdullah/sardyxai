@@ -204,7 +204,43 @@ export function createApp() {
     }
   }
   
-  // Check if client dist exists before serving
+  // Explicit middleware for serving assets before express.static
+  // This directly serves files from the dist directory to work around Vercel issues
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    // Only handle non-API requests with file extensions
+    if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
+      next();
+      return;
+    }
+    
+    const ext = path.extname(req.path);
+    if (!ext || ext === '.html') {
+      // Let express.static or SPA fallback handle these
+      next();
+      return;
+    }
+    
+    // Try to serve static file
+    if (clientDist) {
+      const filePath = path.join(clientDist, req.path);
+      // Security: prevent directory traversal
+      if (!filePath.startsWith(clientDist)) {
+        console.warn(`[app] Security: rejecting directory traversal: ${req.path}`);
+        next();
+        return;
+      }
+      
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        console.log(`[app] Serving static file: ${req.path}`);
+        res.sendFile(filePath);
+        return;
+      }
+    }
+    
+    next();
+  });
+  
+  // Check if client dist exists before serving with express.static
   if (clientDist && fs.existsSync(clientDist)) {
     console.log(`[app] Registering express.static for: ${clientDist}`);
     app.use(express.static(clientDist, { 
@@ -217,7 +253,7 @@ export function createApp() {
     console.warn('[app] Skipping express.static - client dist not accessible');
   }
   
-  // SPA fallback — serve index.html for non-API routes (only if file wasn't found by express.static)
+  // SPA fallback — serve index.html for non-API routes
   app.use((req, res, next) => {
     // Don't intercept API or versioned routes
     if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
@@ -225,17 +261,9 @@ export function createApp() {
       return;
     }
     
-    // Don't intercept requests for files with extensions (except .html)
-    const ext = path.extname(req.path);
-    if (ext && ext !== '.html') {
-      console.warn(`[app] Rejecting file request (extension: ${ext}): ${req.path}`);
-      res.status(404).send('Not found');
-      return;
-    }
-    
     // Try to serve index.html if it exists
     if (clientIndexPath && fs.existsSync(clientIndexPath)) {
-      console.log(`[app] Serving SPA fallback for: ${req.path}`);
+      console.log(`[app] Serving SPA fallback (index.html) for: ${req.path}`);
       res.sendFile(clientIndexPath);
     } else {
       console.warn(`[app] index.html not found at: ${clientIndexPath}`);
