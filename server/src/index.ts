@@ -1,12 +1,14 @@
 import './env.js';
 import { createApp } from './app.js';
 import { initDbAsync } from './db/index.js';
+import { initDevMode } from './services/auth-dev.js';
 import { startHealthChecker } from './services/health.js';
 
 const PORT = process.env.PORT ?? 3001;
 
 async function main() {
   await initDbAsync();
+  initDevMode(); // Initialize dev auth tables if needed
   const app = createApp();
 
   app.listen(Number(PORT), '0.0.0.0', () => {

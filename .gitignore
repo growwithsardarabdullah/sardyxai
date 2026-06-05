@@ -10,10 +10,40 @@ server/data/
 *.db-wal
 *.db-shm
 *.bak
+
+# Environment files - NEVER commit credentials
 .env
 .env.local
+.env.production
+.env.*.local
+
+# OS and Editor
 .DS_Store
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
 
 # Personal deployment scripts (contain keys/credentials — kept local)
 deploy-pi.sh
 update-hermes.sh
+
+# Build outputs
+build/
+out/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Vercel
+.vercel/
+
+# Development
+.env.test.local
+.cache/
