@@ -21,6 +21,14 @@
     {
       "source": "/v1/(.*)",
       "destination": "/api/index.js"
+    },
+    {
+      "source": "/(playground|keys|analytics|settings|dashboard|auth)/?$",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/(?!assets|favicon|icons|index\\.html|[^/]*\\.).*",
+      "destination": "/index.html"
     }
   ]
 }
