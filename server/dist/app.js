@@ -267,6 +267,19 @@ export function createApp() {
     else {
         console.warn('[app] Skipping express.static - client dist not accessible');
     }
+    // Check if client dist exists before serving with express.static
+    if (clientDist && fs.existsSync(clientDist)) {
+        console.log(`[app] Registering express.static for: ${clientDist}`);
+        app.use(express.static(clientDist, {
+            maxAge: '1d',
+            etag: false,
+            fallthrough: true, // Continue to next middleware if file not found
+            dotfiles: 'ignore', // Ignore .gitkeep and other dot files
+        }));
+    }
+    else {
+        console.warn('[app] Skipping express.static - client dist not accessible');
+    }
     // SPA fallback — serve index.html for non-API routes
     app.use((req, res, next) => {
         // Don't intercept API or versioned routes
