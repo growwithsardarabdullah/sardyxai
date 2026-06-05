@@ -196,13 +196,22 @@ export function createApp() {
     app.use(express.static(clientDist, { 
       maxAge: '1d',
       etag: false,
+      fallthrough: true, // Continue to next middleware if file not found
     }));
   }
   
-  // SPA fallback — serve index.html for non-API routes
+  // SPA fallback — serve index.html for non-API routes (only if file wasn't found by express.static)
   app.use((req, res, next) => {
+    // Don't intercept API or versioned routes
     if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
       res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    
+    // Don't intercept requests for files with extensions (except .html)
+    const ext = path.extname(req.path);
+    if (ext && ext !== '.html') {
+      res.status(404).send('Not found');
       return;
     }
     
@@ -210,7 +219,6 @@ export function createApp() {
     if (clientIndexPath && fs.existsSync(clientIndexPath)) {
       res.sendFile(clientIndexPath);
     } else {
-      // Fallback: serve a simple response
       res.status(200).json({ message: 'API is running. Client UI not available.' });
     }
   });
