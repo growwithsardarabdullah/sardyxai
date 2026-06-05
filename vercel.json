@@ -23,11 +23,7 @@
       "destination": "/api/index.js"
     },
     {
-      "source": "/assets/(.*)",
-      "destination": "/assets/$1"
-    },
-    {
-      "source": "/:path([^.]*?)(?:\\.html)?$",
+      "source": "/(?!assets|favicon|icons|index\\.html).*",
       "destination": "/index.html"
     }
   ],
