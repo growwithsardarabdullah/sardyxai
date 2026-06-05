@@ -170,10 +170,16 @@ export function createApp() {
   // Serve client static files (after API error handler)
   // Try multiple path resolutions for compatibility with different environments
   const possibleClientDist = [
+    // Standard paths
     path.resolve(__dirname, '../../client/dist'),
     path.resolve(process.cwd(), 'client/dist'),
     path.join(process.cwd(), '..', 'client', 'dist'),
-    '/var/task/client/dist', // Vercel specific
+    // Vercel specific paths
+    '/var/task/client/dist',
+    path.join('/var/task', 'client', 'dist'),
+    // Common alternatives
+    path.resolve(__dirname, '../../../client/dist'),
+    path.resolve(__dirname, '../../../../client/dist'),
   ];
   
   let clientDist: string | null = null;
