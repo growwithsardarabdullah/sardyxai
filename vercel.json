@@ -2,7 +2,6 @@
   "version": 2,
   "buildCommand": "npm run build",
   "installCommand": "npm install --legacy-peer-deps",
-  "outputDirectory": "client/dist",
   "env": {
     "NODE_ENV": "production"
   },
@@ -15,12 +14,8 @@
   },
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
-    },
-    {
       "source": "/(.*)",
-      "destination": "/index.html"
+      "destination": "/api/index.js"
     }
   ]
 }
