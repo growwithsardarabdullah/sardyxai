@@ -21,10 +21,6 @@
     {
       "source": "/v1/(.*)",
       "destination": "/api/index.js"
-    },
-    {
-      "source": "/(?!assets|favicon|icons|index\\.html).*",
-      "destination": "/index.html"
     }
   ],
   "headers": [
@@ -34,9 +30,12 @@
         {
           "key": "Cache-Control",
           "value": "public, max-age=31536000, immutable"
+        },
+        {
+          "key": "Content-Type",
+          "value": "application/javascript"
         }
       ]
     }
-  ],
-  "cleanUrls": false
+  ]
 }
