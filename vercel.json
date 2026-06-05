@@ -22,30 +22,5 @@
       "source": "/v1/(.*)",
       "destination": "/api/index.js"
     }
-  ],
-  "routes": [
-    {
-      "src": "^/assets/(.*)",
-      "dest": "/assets/$1"
-    },
-    {
-      "src": "^/favicon\\.svg$",
-      "dest": "/favicon.svg"
-    },
-    {
-      "src": "^/icons\\.svg$",
-      "dest": "/icons.svg"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/assets/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=31536000, immutable"
-        }
-      ]
-    }
   ]
 }
