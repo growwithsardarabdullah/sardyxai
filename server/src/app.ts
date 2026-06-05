@@ -299,7 +299,7 @@ export function createApp() {
     console.warn('[app] Skipping express.static - client dist not accessible');
   }
   
-  // SPA fallback — serve index.html for non-API routes
+  // SPA fallback — serve index.html for non-API routes without extensions
   app.use((req, res, next) => {
     // Don't intercept API or versioned routes
     if (req.path.startsWith('/api/') || req.path.startsWith('/v1/')) {
@@ -307,13 +307,13 @@ export function createApp() {
       return;
     }
     
-    // Don't intercept static files (those with extensions or in /assets)
-    if (req.path.includes('.') || req.path.startsWith('/assets/')) {
+    // Don't serve index.html for paths with file extensions (they should 404 if express.static didn't find them)
+    if (req.path.includes('.')) {
       res.status(404).json({ error: 'Not found' });
       return;
     }
 
-    // Try to serve index.html if it exists
+    // Serve index.html for SPA routes
     if (clientIndexPath && fs.existsSync(clientIndexPath)) {
       console.log(`[app] Serving SPA fallback (index.html) for: ${req.path}`);
       res.sendFile(clientIndexPath);
