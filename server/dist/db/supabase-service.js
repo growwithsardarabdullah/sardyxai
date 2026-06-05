@@ -436,4 +436,199 @@ export async function cleanupOldData(retentionDays = 90) {
         .lt('created_at', cutoffDate);
     console.log(`Cleaned up data older than ${retentionDays} days`);
 }
+// ============================================================================
+// PRODUCTION: PROVIDER KEYS (User-scoped)
+// ============================================================================
+export async function addProviderKey(userId, provider, key, label, baseUrl) {
+    const { encrypt } = await import('../lib/crypto.js');
+    const supabase = getSupabaseClient();
+    const { encrypted, iv, authTag } = encrypt(key);
+    const { data, error } = await supabase
+        .from('provider_keys')
+        .insert({
+        user_id: userId,
+        provider,
+        label: label || provider,
+        encrypted_key: encrypted,
+        iv,
+        auth_tag: authTag,
+        base_url: baseUrl || null,
+        enabled: true,
+        status: 'unknown',
+    })
+        .select()
+        .single();
+    if (error)
+        throw new Error(`Failed to add provider key: ${error.message}`);
+    return data;
+}
+export async function getProviderKeysByUser(userId) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('provider_keys')
+        .select('id, user_id, provider, label, enabled, status, base_url, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+    if (error)
+        throw new Error(`Failed to fetch provider keys: ${error.message}`);
+    return data || [];
+}
+export async function getProviderKeyDecrypted(userId, keyId) {
+    const { decrypt } = await import('../lib/crypto.js');
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('provider_keys')
+        .select('encrypted_key, iv, auth_tag')
+        .eq('user_id', userId)
+        .eq('id', keyId)
+        .single();
+    if (error)
+        throw new Error(`Failed to fetch provider key: ${error.message}`);
+    if (!data)
+        throw new Error('Provider key not found');
+    return decrypt(data.encrypted_key, data.iv, data.auth_tag);
+}
+export async function deleteProviderKey(userId, keyId) {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+        .from('provider_keys')
+        .delete()
+        .eq('user_id', userId)
+        .eq('id', keyId);
+    if (error)
+        throw new Error(`Failed to delete provider key: ${error.message}`);
+}
+export async function updateProviderKeyStatus(keyId, status) {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+        .from('provider_keys')
+        .update({ status, last_tested_at: new Date().toISOString() })
+        .eq('id', keyId);
+    if (error)
+        throw new Error(`Failed to update provider key status: ${error.message}`);
+}
+// ============================================================================
+// PRODUCTION: UNIFIED KEYS (User-scoped)
+// ============================================================================
+export async function ensureUserUnifiedKey(userId) {
+    const supabase = getSupabaseClient();
+    // Check for existing enabled key
+    const { data: existing, error: fetchErr } = await supabase
+        .from('unified_keys')
+        .select('key')
+        .eq('user_id', userId)
+        .eq('enabled', true)
+        .single();
+    if (existing?.key)
+        return existing.key;
+    // Generate new key
+    const { data, error } = await supabase
+        .rpc('regenerate_unified_key', { p_user_id: userId });
+    if (error)
+        throw new Error(`Failed to generate unified key: ${error.message}`);
+    return data;
+}
+export async function regenerateUserUnifiedKey(userId) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .rpc('regenerate_unified_key', { p_user_id: userId });
+    if (error)
+        throw new Error(`Failed to regenerate unified key: ${error.message}`);
+    return data;
+}
+// ============================================================================
+// PRODUCTION: USER SETTINGS (User-scoped)
+// ============================================================================
+export async function getUserSetting(userId, key) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('user_settings')
+        .select('value')
+        .eq('user_id', userId)
+        .eq('key', key)
+        .single();
+    if (error && error.code !== 'PGRST116')
+        throw error;
+    return data?.value || null;
+}
+export async function setUserSetting(userId, key, value) {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+        .from('user_settings')
+        .upsert({
+        user_id: userId,
+        key,
+        value,
+        updated_at: new Date().toISOString(),
+    }, {
+        onConflict: 'user_id,key',
+    });
+    if (error)
+        throw new Error(`Failed to save setting: ${error.message}`);
+}
+// ============================================================================
+// PRODUCTION: USAGE LOGGING (User-scoped)
+// ============================================================================
+export async function logUserUsage(userId, provider, model, inputTokens, outputTokens, latencyMs, status = 'success', errorMessage) {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+        .from('usage_logs')
+        .insert({
+        user_id: userId,
+        provider,
+        model,
+        request_count: 1,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        latency_ms: latencyMs || null,
+        status,
+        error_message: errorMessage || null,
+    });
+    if (error) {
+        console.error('[db] Usage logging failed:', error.message);
+        // Non-fatal - don't throw
+        return;
+    }
+}
+export async function getUserUsageSummary(userId, days = 30) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .rpc('get_usage_summary', { p_user_id: userId, p_days: days });
+    if (error)
+        throw new Error(`Failed to get usage summary: ${error.message}`);
+    return data || {
+        total_requests: 0,
+        total_input_tokens: 0,
+        total_output_tokens: 0,
+        provider_count: 0,
+        model_count: 0,
+    };
+}
+export async function getUserUsageByProvider(userId, days = 30) {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+        .from('usage_logs')
+        .select('provider, request_count, input_tokens, output_tokens')
+        .eq('user_id', userId)
+        .gte('created_at', `now()-${days} days`)
+        .order('provider');
+    if (error)
+        throw new Error(`Failed to get usage by provider: ${error.message}`);
+    // Aggregate by provider
+    const byProvider = {};
+    (data || []).forEach((row) => {
+        if (!byProvider[row.provider]) {
+            byProvider[row.provider] = {
+                provider: row.provider,
+                requests: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+            };
+        }
+        byProvider[row.provider].requests += row.request_count;
+        byProvider[row.provider].inputTokens += row.input_tokens;
+        byProvider[row.provider].outputTokens += row.output_tokens;
+    });
+    return Object.values(byProvider);
+}
 //# sourceMappingURL=supabase-service.js.map

@@ -6,7 +6,7 @@
 
 import crypto from 'crypto';
 import { getDb } from '../db/index.js';
-import type { AuthSession, AuthUser } from './auth-supabase.js';
+import type { AuthSession, SessionUser } from './auth-supabase.js';
 
 // Simple in-memory session store for dev
 const sessionStore = new Map<string, { userId: string; email: string; expiresAt: number }>();
@@ -145,7 +145,8 @@ export async function signInDev(email: string, password: string): Promise<{ succ
         },
         accessToken,
         refreshToken,
-        expiresAt: expiresAt.toISOString(),
+        expiresIn: 30 * 24 * 60 * 60,
+        expiresAt: expiresAtMs,
       },
     };
   } catch (error) {
@@ -171,12 +172,12 @@ export async function loadUserDataDev(identifier: string): Promise<{ success: bo
     const keys = db.prepare('SELECT * FROM provider_keys WHERE email = ?').all(email);
 
     // Get unified key
-    const unifiedKeyRow = db.prepare('SELECT key FROM unified_keys WHERE email = ?').get(email);
+    const unifiedKeyRow = db.prepare('SELECT key FROM unified_keys WHERE email = ?').get(email) as any;
 
     // Get settings
-    const settings = db.prepare('SELECT key, value FROM user_settings WHERE email = ?').all(email);
+    const settings = db.prepare('SELECT key, value FROM user_settings WHERE email = ?').all(email) as any[];
     const settingsMap = Object.fromEntries(
-      (settings as any[]).map(s => [s.key, s.value])
+      settings.map(s => [s.key, s.value])
     );
 
     // Get usage

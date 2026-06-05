@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { ensureUserUnifiedKey, regenerateUnifiedKey } from '../db/index.js';
-import type { SessionUser } from '../services/auth.js';
+import type { SessionUser } from '../services/auth-supabase.js';
 
 export const settingsRouter = Router();
 

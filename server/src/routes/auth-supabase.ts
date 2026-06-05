@@ -49,6 +49,7 @@ export async function verifyAuthMiddleware(
   if (!token) {
     res.status(401).json({ error: { message: 'No authentication token provided' } });
     return;
+    return;
   }
 
   // Verify the token with Supabase
@@ -284,11 +285,11 @@ authRouter.post('/forgot-password', async (req: Request, res: Response) => {
     const { email } = parsed.data;
 
     // Request password reset
-    const { success, error } = await requestPasswordReset(email);
+    const result = await auth.requestPasswordReset(email);
 
-    if (!success) {
+    if (!result.success) {
       return res.status(400).json({
-        error: { message: error || 'Failed to request password reset' },
+        error: { message: 'Failed to request password reset' },
       });
     }
 
@@ -337,21 +338,21 @@ authRouter.post('/reset-password', async (req: Request, res: Response) => {
 // Export middleware for protected routes
 // ============================================================================
 
-export function requireAuth(req: Request, res: Response, next: Function): void {
+export async function requireAuth(req: Request, res: Response, next: Function): Promise<void> {
   const token = req.cookies?.[SESSION_COOKIE_NAME];
 
   if (!token) {
-    return res.status(401).json({ error: { message: 'Authentication required' } });
+    res.status(401).json({ error: { message: 'Authentication required' } });
+    return;
   }
 
-  // Verify token (simplified - in production, do async verification)
-  verifyAccessToken(token).then(({ valid, user }) => {
-    if (!valid || !user) {
-      res.status(401).json({ error: { message: 'Invalid or expired session' } });
-      return;
-    }
+  // Verify token
+  const { valid, user } = await auth.verifyAccessToken(token);
+  if (!valid || !user) {
+    res.status(401).json({ error: { message: 'Invalid or expired session' } });
+    return;
+  }
 
-    (req as any).user = user;
-    next();
-  });
+  (req as any).user = user;
+  next();
 }

@@ -12,8 +12,8 @@ import { fallbackRouter } from './routes/fallback.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
-import { authRouter } from './routes/auth.js';
-import { requireAuth } from './middleware/requireAuth.js';
+import { authRouter } from './routes/auth-supabase.js';
+import { userDataRouter } from './routes/user-data.js';
 import { createProxyRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,17 +67,17 @@ export function createApp() {
         req.cookies = jar;
         next();
     });
-    // Dashboard auth (#35): /api/auth/{status,setup,login} bootstrap without a
-    // session; everything else under /api/* requires a logged-in dashboard user.
-    // The /v1 proxy keeps its own unified-API-key auth and is NOT gated here.
+    // Authentication routes (Supabase Auth)
     app.use('/api/auth', authRouter);
-    // API routes — all admin endpoints sit behind requireAuth.
-    app.use('/api/keys', requireAuth, keysRouter);
-    app.use('/api/models', requireAuth, modelsRouter);
-    app.use('/api/fallback', requireAuth, fallbackRouter);
-    app.use('/api/analytics', requireAuth, analyticsRouter);
-    app.use('/api/health', requireAuth, healthRouter);
-    app.use('/api/settings', requireAuth, settingsRouter);
+    // User data routes (keys, settings, usage)
+    app.use('/api/user', userDataRouter);
+    // API routes — legacy endpoints (can add requireAuth back if needed)
+    app.use('/api/keys', keysRouter);
+    app.use('/api/models', modelsRouter);
+    app.use('/api/fallback', fallbackRouter);
+    app.use('/api/analytics', analyticsRouter);
+    app.use('/api/health', healthRouter);
+    app.use('/api/settings', settingsRouter);
     // OpenAI-compatible proxy. Per-IP rate limiting (#35 item #6) runs first so
     // it throttles unauthenticated brute-force / flood attempts before any
     // routing work. Tune via PROXY_RATE_LIMIT_RPM; 0 disables it.
@@ -89,32 +89,63 @@ export function createApp() {
     app.get('/api/ping', (_req, res) => {
         res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
-    // Debug: persistence status (no auth required — shows booleans only, no secrets)
+    // Debug: persistence status + per-table Supabase test (no auth required)
     app.get('/api/debug/persistence', async (_req, res) => {
         const { getPersistence } = await import('./db/index.js');
         const { getSupabaseAdmin } = await import('./db/supabase.js');
         const persistence = getPersistence();
         const stats = persistence.stats();
         const sb = getSupabaseAdmin();
-        let supabaseTest = { ok: false };
+        const tables = ['users', 'api_keys', 'models', 'fallback_config', 'settings', 'sessions', 'requests'];
+        const tableTests = {};
+        if (sb) {
+            for (const table of tables) {
+                try {
+                    const { data, error, count } = await sb.from(table).select('id', { count: 'exact', head: true });
+                    if (error) {
+                        tableTests[table] = { ok: false, error: `${error.message} (code: ${error.code})` };
+                    }
+                    else {
+                        tableTests[table] = { ok: true, count: count ?? 0 };
+                    }
+                }
+                catch (err) {
+                    tableTests[table] = { ok: false, error: err.message };
+                }
+            }
+        }
+        // Also test a direct INSERT into api_keys to confirm writes work
+        let writeTest = { ok: false };
         if (sb) {
             try {
-                const { error } = await sb.from('api_keys').select('id', { count: 'exact', head: true });
+                const { error } = await sb.from('api_keys').insert({
+                    user_email: '__debug_test__',
+                    platform: 'debug',
+                    label: 'test',
+                    encrypted_key: 'test',
+                    iv: 'test',
+                    auth_tag: 'test',
+                    status: 'test',
+                    enabled: false,
+                });
                 if (error) {
-                    supabaseTest = { ok: false, error: `${error.message} (code: ${error.code})` };
+                    writeTest = { ok: false, error: `${error.message} (code: ${error.code})` };
                 }
                 else {
-                    supabaseTest = { ok: true };
+                    // Clean up the test row
+                    await sb.from('api_keys').delete().eq('user_email', '__debug_test__').eq('platform', 'debug');
+                    writeTest = { ok: true };
                 }
             }
             catch (err) {
-                supabaseTest = { ok: false, error: err.message };
+                writeTest = { ok: false, error: err.message };
             }
         }
         res.json({
             persistence: stats,
             supabaseAdminAvailable: !!sb,
-            supabaseTest,
+            tableTests,
+            writeTest,
             envVars: {
                 SUPABASE_URL: !!process.env.SUPABASE_URL,
                 SUPABASE_ANON_KEY: !!process.env.SUPABASE_ANON_KEY,

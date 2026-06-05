@@ -49,4 +49,16 @@ export declare function recordErrorLog(errorType: string, message: string, stack
 export declare function updateProviderHealth(platform: string, keyId: number | null, status: 'healthy' | 'degraded' | 'unhealthy', error?: string): Promise<void>;
 export declare function getProviderHealth(platform: string): Promise<any>;
 export declare function cleanupOldData(retentionDays?: number): Promise<void>;
+export declare function addProviderKey(userId: string, provider: string, key: string, label?: string, baseUrl?: string): Promise<any>;
+export declare function getProviderKeysByUser(userId: string): Promise<any>;
+export declare function getProviderKeyDecrypted(userId: string, keyId: string): Promise<string>;
+export declare function deleteProviderKey(userId: string, keyId: string): Promise<void>;
+export declare function updateProviderKeyStatus(keyId: string, status: string): Promise<void>;
+export declare function ensureUserUnifiedKey(userId: string): Promise<any>;
+export declare function regenerateUserUnifiedKey(userId: string): Promise<any>;
+export declare function getUserSetting(userId: string, key: string): Promise<any>;
+export declare function setUserSetting(userId: string, key: string, value: any): Promise<void>;
+export declare function logUserUsage(userId: string, provider: string, model: string, inputTokens: number, outputTokens: number, latencyMs?: number, status?: string, errorMessage?: string): Promise<void>;
+export declare function getUserUsageSummary(userId: string, days?: number): Promise<any>;
+export declare function getUserUsageByProvider(userId: string, days?: number): Promise<any[]>;
 //# sourceMappingURL=supabase-service.d.ts.map

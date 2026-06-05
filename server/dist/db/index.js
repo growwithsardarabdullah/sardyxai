@@ -4,8 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initEncryptionKey } from '../lib/crypto.js';
-import { createPersistence } from './persistence.js';
-let persistence = null;
+// Persistence layer removed - using Supabase directly now
+// No-op stubs below for backward compatibility during migration
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use /tmp for Vercel serverless (ephemeral), or local data/ for development
 const DB_PATH = process.env.NODE_ENV === 'production'
@@ -67,27 +67,21 @@ export function initDb(dbPath) {
     }
 }
 /**
- * Async variant of initDb. After opening the in-memory SQLite and running all
- * seed/migration code, awaits Supabase hydration if credentials are configured.
+ * Async variant of initDb. Database initialization only - persistence via Supabase now.
  * Use this in production entry points (Vercel handler, local server boot).
- * Tests keep using initDb() (sync, no Supabase) so the test env stays offline.
+ * Tests keep using initDb() (sync, no Supabase).
  */
 export async function initDbAsync(dbPath) {
-    const handle = initDb(dbPath);
-    if (!persistence)
-        persistence = createPersistence();
-    if (persistence.isSupabase) {
-        await persistence.hydrateIfNeeded();
-        // Flush any writes that were queued during initialization (e.g. unified key)
-        await persistence.flush();
-    }
-    return handle;
+    return initDb(dbPath);
 }
-/** Accessor for the write-through persistence handle. Lazy-inits on first call. */
+const noPersistence = {
+    enqueueWrite() { },
+    async flush() { },
+    stats() { return { queueLength: 0, workerBusy: false, hydrated: true, isSupabase: false }; },
+};
 export function getPersistence() {
-    if (!persistence)
-        persistence = createPersistence();
-    return persistence;
+    // Persistence layer removed - all writes go directly to Supabase now
+    return noPersistence;
 }
 function createTables(db) {
     db.exec(`

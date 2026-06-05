@@ -1,15 +1,23 @@
 import Database from 'better-sqlite3';
-import { type PersistenceHandle } from './persistence.js';
 export declare function getDb(): Database.Database;
 export declare function initDb(dbPath?: string): Database.Database;
 /**
- * Async variant of initDb. After opening the in-memory SQLite and running all
- * seed/migration code, awaits Supabase hydration if credentials are configured.
+ * Async variant of initDb. Database initialization only - persistence via Supabase now.
  * Use this in production entry points (Vercel handler, local server boot).
- * Tests keep using initDb() (sync, no Supabase) so the test env stays offline.
+ * Tests keep using initDb() (sync, no Supabase).
  */
 export declare function initDbAsync(dbPath?: string): Promise<Database.Database>;
-/** Accessor for the write-through persistence handle. Lazy-inits on first call. */
+/** No-op stub for backward compatibility. Supabase writes are now synchronous. */
+interface PersistenceHandle {
+    enqueueWrite(job: () => Promise<void>, label?: string): void;
+    flush(): Promise<void>;
+    stats(): {
+        queueLength: number;
+        workerBusy: boolean;
+        hydrated: boolean;
+        isSupabase: boolean;
+    };
+}
 export declare function getPersistence(): PersistenceHandle;
 export declare function getUnifiedApiKey(userEmail?: string): string;
 /** Look up which user_email owns a given unified API key value.
@@ -20,4 +28,5 @@ export declare function ensureUserUnifiedKey(userEmail: string): string;
 export declare function regenerateUnifiedKey(userEmail: string): string;
 export declare function getSetting(key: string): string | undefined;
 export declare function setSetting(key: string, value: string): void;
+export {};
 //# sourceMappingURL=index.d.ts.map

@@ -766,7 +766,7 @@ export async function getUserUsageByProvider(userId: string, days: number = 30) 
   
   // Aggregate by provider
   const byProvider: Record<string, any> = {};
-  (data || []).forEach(row => {
+  (data || []).forEach((row: any) => {
     if (!byProvider[row.provider]) {
       byProvider[row.provider] = {
         provider: row.provider,

@@ -101,7 +101,7 @@ userDataRouter.get('/keys', async (req: Request, res: Response) => {
     const keys = await getProviderKeysByUser(userId);
 
     res.json({
-      keys: keys.map(k => ({
+      keys: keys.map((k: any) => ({
         id: k.id,
         provider: k.provider,
         label: k.label,
@@ -121,7 +121,7 @@ userDataRouter.get('/keys', async (req: Request, res: Response) => {
 userDataRouter.get('/keys/:keyId', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { keyId } = req.params;
+    const keyId = typeof req.params.keyId === 'string' ? req.params.keyId : req.params.keyId[0];
 
     const decryptedKey = await getProviderKeyDecrypted(userId, keyId);
 
@@ -170,7 +170,7 @@ userDataRouter.patch('/keys/:keyId', async (req: Request, res: Response) => {
 userDataRouter.delete('/keys/:keyId', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { keyId } = req.params;
+    const keyId = typeof req.params.keyId === 'string' ? req.params.keyId : req.params.keyId[0];
 
     await deleteProviderKey(userId, keyId);
 
@@ -233,7 +233,7 @@ const settingSchema = z.object({
 userDataRouter.get('/settings/:key', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { key } = req.params;
+    const key = typeof req.params.key === 'string' ? req.params.key : req.params.key[0];
 
     const value = await getUserSetting(userId, key);
 
@@ -251,7 +251,7 @@ userDataRouter.get('/settings/:key', async (req: Request, res: Response) => {
 userDataRouter.put('/settings/:key', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { key } = req.params;
+    const key = typeof req.params.key === 'string' ? req.params.key : req.params.key[0];
     const parsed = settingSchema.safeParse(req.body);
 
     if (!parsed.success) {

@@ -2,7 +2,7 @@
 // This uses the Supabase REST/Auth API directly for server-side operations
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from './database.types.js'; // You'll need to generate this with `supabase gen types`
+import type { Database } from './database.types';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
