@@ -5,6 +5,7 @@
   "env": {
     "NODE_ENV": "production"
   },
+  "public": "client/dist",
   "functions": {
     "api/index.js": {
       "runtime": "nodejs20.x",
@@ -14,8 +15,9 @@
   },
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/(.*)",
       "destination": "/api/index.js"
     }
-  ]
+  ],
+  "cleanUrls": false
 }
