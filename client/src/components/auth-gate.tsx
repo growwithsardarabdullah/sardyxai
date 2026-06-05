@@ -45,7 +45,7 @@ function AuthForm({ mode: initialMode, onAuthed }: { mode: 'setup' | 'login'; on
           setBusy(false)
           return
         }
-        await apiFetch('/api/auth/register', {
+        await apiFetch('/api/auth/signup', {
           method: 'POST',
           body: JSON.stringify({ email, password }),
         })
