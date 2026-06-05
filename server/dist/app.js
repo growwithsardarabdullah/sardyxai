@@ -161,47 +161,55 @@ export function createApp() {
     // Try multiple path resolutions for compatibility with different environments
     const possibleClientDist = [
         // Vercel-specific path (where public directory gets served from)
-        './',
         'client/dist',
-        'client/dist/',
-        '/var/task/client/dist',
-        // Standard relative paths
         path.resolve(__dirname, '../../client/dist'),
         path.resolve(process.cwd(), 'client/dist'),
         path.join(process.cwd(), '..', 'client', 'dist'),
         // Alternative paths
         path.resolve(__dirname, '../../../client/dist'),
         path.resolve(__dirname, '../../../../client/dist'),
+        '/var/task/client/dist',
     ];
     let clientDist = null;
     let clientIndexPath = null;
     console.log(`[app] __dirname: ${__dirname}`);
     console.log(`[app] process.cwd(): ${process.cwd()}`);
-    for (const possiblePath of possibleClientDist) {
-        const exists = fs.existsSync(possiblePath);
-        const isDir = exists && fs.statSync(possiblePath).isDirectory();
-        console.log(`[app] Checking ${possiblePath}: exists=${exists}, isDir=${isDir}`);
-        if (isDir) {
-            const assetsDirExists = fs.existsSync(path.join(possiblePath, 'assets'));
-            const indexHtmlExists = fs.existsSync(path.join(possiblePath, 'index.html'));
-            console.log(`[app]   -> assets dir: ${assetsDirExists}, index.html: ${indexHtmlExists}`);
-            if (assetsDirExists && indexHtmlExists) {
+    try {
+        for (const possiblePath of possibleClientDist) {
+            try {
+                const exists = fs.existsSync(possiblePath);
+                if (!exists) {
+                    console.log(`[app] Not found: ${possiblePath}`);
+                    continue;
+                }
+                const stat = fs.statSync(possiblePath);
+                if (!stat.isDirectory()) {
+                    console.log(`[app] Not a directory: ${possiblePath}`);
+                    continue;
+                }
+                // Found it
                 clientDist = possiblePath;
                 clientIndexPath = path.join(possiblePath, 'index.html');
-                console.log(`[app] ✓ Found complete client dist at: ${clientDist}`);
+                console.log(`[app] ✓ Found client dist at: ${clientDist}`);
                 break;
+            }
+            catch (pathErr) {
+                // Skip paths that cause errors
+                console.log(`[app] Error checking ${possiblePath}:`, pathErr.message);
             }
         }
     }
+    catch (err) {
+        console.error('[app] Unexpected error during directory resolution:', err);
+    }
     if (!clientDist) {
-        console.warn('[app] ✗ Client dist directory not found at any of:', possibleClientDist);
-        // Try to list what we have in the current directory
+        console.warn('[app] ✗ Client dist directory not found');
         try {
             const cwdContents = fs.readdirSync(process.cwd());
-            console.log('[app] Contents of cwd:', cwdContents.slice(0, 20).join(', '));
+            console.log('[app] Contents of cwd:', cwdContents.slice(0, 10).join(', '));
         }
         catch (e) {
-            console.error('[app] Could not list cwd:', e);
+            console.error('[app] Could not list cwd');
         }
     }
     if (!clientDist) {
