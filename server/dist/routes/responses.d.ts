@@ -58,13 +58,13 @@ declare const responsesRequestSchema: z.ZodObject<{
         content: string | z.objectOutputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }, {
         content: string | z.objectInputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }>]>, "many">]>;
     stream: z.ZodOptional<z.ZodBoolean>;
@@ -158,13 +158,13 @@ declare const responsesRequestSchema: z.ZodObject<{
         content: string | z.objectOutputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }, {
         content: string | z.objectInputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }>]>, "many">]>;
     stream: z.ZodOptional<z.ZodBoolean>;
@@ -258,13 +258,13 @@ declare const responsesRequestSchema: z.ZodObject<{
         content: string | z.objectOutputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }, {
         content: string | z.objectInputType<{
             type: z.ZodString;
         }, z.ZodTypeAny, "passthrough">[];
-        role: "system" | "user" | "assistant" | "developer";
+        role: "user" | "system" | "assistant" | "developer";
         type?: "message" | undefined;
     }>]>, "many">]>;
     stream: z.ZodOptional<z.ZodBoolean>;

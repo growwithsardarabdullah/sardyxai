@@ -1,22 +1,17 @@
-// Production auth routes using Supabase Auth or dev fallback
-// Handles signup, login, logout, password reset, and session management
-// Auto-detects whether Supabase is configured; falls back to dev mode locally
+// Production + dev auth routes — supports Supabase Auth in production,
+// SQLite HMAC-cookie/Bearer auth in dev/test.
+// Auto-detects whether Supabase is configured; falls back to local mode.
 import { Router } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import * as authSupa from '../services/auth-supabase.js';
 import * as authDev from '../services/auth-dev.js';
 const USE_DEV_AUTH = !authDev.isSupabaseConfigured();
-// Create unified auth interface
-const auth = {
-    signUp: USE_DEV_AUTH ? authDev.signUpDev : authSupa.signUp,
-    signIn: USE_DEV_AUTH ? authDev.signInDev : authSupa.signIn,
-    loadUserData: USE_DEV_AUTH ? authDev.loadUserDataDev : authSupa.loadUserData,
-    logout: USE_DEV_AUTH ? authDev.logoutDev : authSupa.logout,
-    verifyAccessToken: USE_DEV_AUTH ? authDev.verifyAccessTokenDev : authSupa.verifyAccessToken,
-    requestPasswordReset: USE_DEV_AUTH ? authDev.requestPasswordResetDev : authSupa.requestPasswordReset,
-};
-export const authRouter = Router();
-// Session cookie name and configuration
+// ============================================================================
+// Local (dev/test) auth — backed by the `users` SQLite table
+// ============================================================================
+import { getDb } from '../db/index.js';
+import { hashPassword, verifyPassword } from '../lib/password.js';
 const SESSION_COOKIE_NAME = 'freellmapi_session';
 const SESSION_COOKIE_OPTIONS = {
     httpOnly: true,
@@ -25,73 +20,137 @@ const SESSION_COOKIE_OPTIONS = {
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     path: '/',
 };
-// Middleware to verify access token from Authorization header or cookie
-export async function verifyAuthMiddleware(req, res, next) {
-    // Get token from Authorization header or session cookie
-    let token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token && req.cookies?.[SESSION_COOKIE_NAME]) {
-        token = req.cookies[SESSION_COOKIE_NAME];
+// Simple in-memory brute-force protection: count consecutive bad-password
+// attempts per email (never by IP — IP can be shared on Vercel).
+// Resets on successful login or when count reaches threshold.
+const loginAttempts = new Map();
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
+function checkRateLimit(email) {
+    const rec = loginAttempts.get(email);
+    if (!rec)
+        return { allowed: true };
+    if (rec.until && Date.now() < rec.until) {
+        return { allowed: false, retryAfterSec: Math.ceil((rec.until - Date.now()) / 1000) };
     }
-    if (!token) {
-        res.status(401).json({ error: { message: 'No authentication token provided' } });
-        return;
-        return;
+    if (rec.count >= MAX_ATTEMPTS) {
+        // Start lockout
+        rec.until = Date.now() + LOCKOUT_MS;
+        return { allowed: false, retryAfterSec: Math.ceil(LOCKOUT_MS / 1000) };
     }
-    // Verify the token with Supabase
-    const { valid, user, error } = await auth.verifyAccessToken(token);
-    if (!valid || !user) {
-        res.clearCookie(SESSION_COOKIE_NAME);
-        res.status(401).json({ error: { message: error || 'Invalid token' } });
-        return;
+    return { allowed: true };
+}
+function recordFailedAttempt(email) {
+    const rec = loginAttempts.get(email) ?? { count: 0 };
+    rec.count += 1;
+    if (rec.count >= MAX_ATTEMPTS) {
+        rec.until = Date.now() + LOCKOUT_MS;
     }
-    // Attach user to request
-    req.user = user;
-    next();
+    loginAttempts.set(email, rec);
+}
+function clearAttempts(email) {
+    loginAttempts.delete(email);
+}
+// ============================================================================
+// HMAC token (stateless, invalidatable via session_version bump)
+// ============================================================================
+function getSecret() {
+    return process.env.SESSION_SECRET ?? process.env.ENCRYPTION_KEY ?? '';
+}
+function signToken(userId, email, sessionVersion) {
+    const secret = getSecret();
+    const payload = `${userId}|${email}|${sessionVersion}`;
+    const sig = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    return Buffer.from(JSON.stringify({ payload, sig })).toString('base64url');
+}
+function verifyToken(token) {
+    try {
+        const { payload, sig } = JSON.parse(Buffer.from(token, 'base64url').toString());
+        const secret = getSecret();
+        const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+        if (sig.length !== expected.length)
+            return { valid: false };
+        if (!crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) {
+            return { valid: false };
+        }
+        const parts = payload.split('|');
+        const userId = parts[0];
+        const sessionVersion = parts[parts.length - 1];
+        const email = parts.slice(1, -1).join('|'); // handles pipe in email (unlikely but safe)
+        return { valid: true, userId: Number(userId), email, sessionVersion: Number(sessionVersion) };
+    }
+    catch {
+        return { valid: false };
+    }
+}
+function verifyLocalToken(token) {
+    const result = verifyToken(token);
+    if (!result.valid || !result.userId || !result.email) {
+        return { valid: false };
+    }
+    // Check the user still exists and session_version matches
+    const db = getDb();
+    const user = db.prepare('SELECT id, email, session_version FROM users WHERE id = ?').get(result.userId);
+    if (!user || user.session_version !== result.sessionVersion) {
+        return { valid: false };
+    }
+    return { valid: true, user: { id: String(user.id), email: user.email } };
+}
+// ============================================================================
+// Supabase auth interface (production)
+// ============================================================================
+const supaAuth = {
+    signUp: authSupa.signUp,
+    signIn: authSupa.signIn,
+    loadUserData: authSupa.loadUserData,
+    logout: authSupa.logout,
+    verifyAccessToken: authSupa.verifyAccessToken,
+    requestPasswordReset: authSupa.requestPasswordReset,
+};
+// ============================================================================
+// Router
+// ============================================================================
+export const authRouter = Router();
+// Helper: extract token from Authorization header or session cookie
+function extractToken(req) {
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith('Bearer ')) {
+        return authHeader.slice(7);
+    }
+    return req.cookies?.[SESSION_COOKIE_NAME] ?? null;
 }
 // ============================================================================
 // GET /api/auth/status
 // ============================================================================
-// Check authentication status and return user data if authenticated
 authRouter.get('/status', async (req, res) => {
     try {
-        const token = req.cookies?.[SESSION_COOKIE_NAME];
-        if (!token) {
-            return res.json({
-                authenticated: false,
-                needsSetup: false,
-                user: null,
-                userData: null,
-            });
+        if (USE_DEV_AUTH) {
+            // Local mode: check if any users exist (needsSetup)
+            const db = getDb();
+            const userCount = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
+            const token = extractToken(req);
+            if (!token) {
+                return res.json({ authenticated: false, needsSetup: userCount === 0, user: null, userData: null });
+            }
+            const { valid, user } = verifyLocalToken(token);
+            if (!valid || !user) {
+                res.clearCookie(SESSION_COOKIE_NAME);
+                return res.json({ authenticated: false, needsSetup: userCount === 0, user: null, userData: null });
+            }
+            return res.json({ authenticated: true, needsSetup: false, user, userData: null, email: user.email });
         }
-        // Verify token
-        const { valid, user } = await auth.verifyAccessToken(token);
+        // Supabase mode
+        const token = extractToken(req);
+        if (!token) {
+            return res.json({ authenticated: false, needsSetup: false, user: null, userData: null });
+        }
+        const { valid, user } = await supaAuth.verifyAccessToken(token);
         if (!valid || !user) {
             res.clearCookie(SESSION_COOKIE_NAME);
-            return res.json({
-                authenticated: false,
-                needsSetup: false,
-                user: null,
-                userData: null,
-            });
+            return res.json({ authenticated: false, needsSetup: false, user: null, userData: null });
         }
-        // Load user data (use email for dev auth, id for supabase)
-        const userId = user.id || user.email;
-        const { success, data: userData, error } = await auth.loadUserData(userId);
-        if (!success) {
-            console.warn('[auth] Failed to load user data:', error);
-            return res.json({
-                authenticated: true,
-                needsSetup: false,
-                user,
-                userData: null,
-            });
-        }
-        res.json({
-            authenticated: true,
-            needsSetup: false,
-            user,
-            userData,
-        });
+        const { success, data: userData } = await supaAuth.loadUserData(user.id || user.email);
+        res.json({ authenticated: true, needsSetup: false, user, userData: success ? userData : null });
     }
     catch (err) {
         console.error('[auth] Status check error:', err);
@@ -99,43 +158,119 @@ authRouter.get('/status', async (req, res) => {
     }
 });
 // ============================================================================
-// POST /api/auth/signup
+// POST /api/auth/setup — create an account (first-run or open registration in local mode)
 // ============================================================================
-// Create a new user account
-const signupSchema = z.object({
-    email: z.string().email(),
-    password: z.string().min(8),
+const setupSchema = z.object({
+    email: z.string().email({ message: 'Invalid email address' }),
+    password: z.string().min(8, { message: 'Password must be at least 8 characters' }),
 });
-authRouter.post('/signup', async (req, res) => {
+authRouter.post('/setup', async (req, res) => {
     try {
-        const parsed = signupSchema.safeParse(req.body);
+        const parsed = setupSchema.safeParse(req.body);
         if (!parsed.success) {
             return res.status(400).json({
-                error: { message: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') },
+                error: { message: parsed.error.errors.map(e => e.message).join(', ') },
             });
         }
         const { email, password } = parsed.data;
-        // Sign up the user
-        const { success, error } = await auth.signUp(email, password);
+        if (USE_DEV_AUTH) {
+            const db = getDb();
+            const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+            if (existing) {
+                return res.status(409).json({ error: { message: 'Email already registered' } });
+            }
+            const hash = hashPassword(password);
+            const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(email, hash);
+            const userId = result.lastInsertRowid;
+            const token = signToken(userId, email, 0);
+            res.cookie(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+            return res.status(201).json({ success: true, token, user: { id: String(userId), email } });
+        }
+        // Supabase mode
+        const { success, error } = await supaAuth.signUp(email, password);
         if (!success) {
-            return res.status(400).json({
-                error: { message: error || 'Signup failed' },
-            });
+            return res.status(400).json({ error: { message: error || 'Signup failed' } });
         }
-        // Now sign them in to get a session
-        const { success: signinSuccess, session, error: signinError } = await auth.signIn(email, password);
-        if (!signinSuccess || !session) {
-            return res.status(500).json({
-                error: { message: signinError || 'Failed to create session after signup' },
-            });
+        const { success: ok, session } = await supaAuth.signIn(email, password);
+        if (!ok || !session) {
+            return res.status(500).json({ error: { message: 'Failed to create session after setup' } });
         }
-        // Set session cookie
         res.cookie(SESSION_COOKIE_NAME, session.accessToken, SESSION_COOKIE_OPTIONS);
-        res.status(201).json({
-            success: true,
-            user: session.user,
-            message: 'Account created successfully',
-        });
+        return res.status(201).json({ success: true, token: session.accessToken, user: session.user });
+    }
+    catch (err) {
+        console.error('[auth] Setup error:', err);
+        res.status(500).json({ error: { message: 'Setup failed' } });
+    }
+});
+// ============================================================================
+// POST /api/auth/register — same as setup (explicit registration endpoint)
+// ============================================================================
+authRouter.post('/register', async (req, res) => {
+    try {
+        const parsed = setupSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({
+                error: { message: parsed.error.errors.map(e => e.message).join(', ') },
+            });
+        }
+        const { email, password } = parsed.data;
+        if (USE_DEV_AUTH) {
+            const db = getDb();
+            const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+            if (existing) {
+                return res.status(409).json({ error: { message: 'Email already registered' } });
+            }
+            const hash = hashPassword(password);
+            const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(email, hash);
+            const userId = result.lastInsertRowid;
+            const token = signToken(userId, email, 0);
+            res.cookie(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+            return res.status(201).json({ success: true, token, user: { id: String(userId), email } });
+        }
+        const { success, error } = await supaAuth.signUp(email, password);
+        if (!success) {
+            const status = error?.includes('already') ? 409 : 400;
+            return res.status(status).json({ error: { message: error || 'Registration failed' } });
+        }
+        return res.status(201).json({ success: true });
+    }
+    catch (err) {
+        console.error('[auth] Register error:', err);
+        res.status(500).json({ error: { message: 'Registration failed' } });
+    }
+});
+// ============================================================================
+// POST /api/auth/signup — alias for register
+// ============================================================================
+authRouter.post('/signup', async (req, res) => {
+    try {
+        const parsed = setupSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({
+                error: { message: parsed.error.errors.map(e => e.message).join(', ') },
+            });
+        }
+        const { email, password } = parsed.data;
+        if (USE_DEV_AUTH) {
+            const db = getDb();
+            const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+            if (existing) {
+                return res.status(409).json({ error: { message: 'Email already registered' } });
+            }
+            const hash = hashPassword(password);
+            const result = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)').run(email, hash);
+            const userId = result.lastInsertRowid;
+            const token = signToken(userId, email, 0);
+            res.cookie(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+            return res.status(201).json({ success: true, token, user: { id: String(userId), email } });
+        }
+        const { success, error } = await supaAuth.signUp(email, password);
+        if (!success) {
+            const status = error?.includes('already') ? 409 : 400;
+            return res.status(status).json({ error: { message: error || 'Signup failed' } });
+        }
+        return res.status(201).json({ success: true });
     }
     catch (err) {
         console.error('[auth] Signup error:', err);
@@ -145,36 +280,54 @@ authRouter.post('/signup', async (req, res) => {
 // ============================================================================
 // POST /api/auth/login
 // ============================================================================
-// Authenticate user with email and password
 const loginSchema = z.object({
     email: z.string().email(),
-    password: z.string().min(8),
+    password: z.string().min(1),
 });
 authRouter.post('/login', async (req, res) => {
     try {
         const parsed = loginSchema.safeParse(req.body);
         if (!parsed.success) {
             return res.status(400).json({
-                error: { message: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') },
+                error: { message: parsed.error.errors.map(e => e.message).join(', '), type: 'validation_error' },
             });
         }
         const { email, password } = parsed.data;
-        // Sign in the user
-        const { success, session, error } = await auth.signIn(email, password);
-        if (!success || !session) {
-            return res.status(401).json({
-                error: { message: error || 'Invalid email or password' },
+        // Rate limiting check
+        const rl = checkRateLimit(email);
+        if (!rl.allowed) {
+            return res.status(429).json({
+                error: {
+                    message: `Too many failed attempts. Try again in ${rl.retryAfterSec}s.`,
+                    type: 'rate_limit_error',
+                },
             });
         }
-        // Set session cookie
+        if (USE_DEV_AUTH) {
+            const db = getDb();
+            const user = db.prepare('SELECT id, email, password_hash, session_version FROM users WHERE email = ?').get(email);
+            if (!user || !verifyPassword(password, user.password_hash)) {
+                recordFailedAttempt(email);
+                return res.status(401).json({
+                    error: { message: 'Invalid email or password', type: 'authentication_error' },
+                });
+            }
+            clearAttempts(email);
+            const token = signToken(user.id, email, user.session_version);
+            res.cookie(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+            return res.json({ success: true, token, user: { id: String(user.id), email } });
+        }
+        // Supabase mode
+        const { success, session, error } = await supaAuth.signIn(email, password);
+        if (!success || !session) {
+            recordFailedAttempt(email);
+            return res.status(401).json({
+                error: { message: error || 'Invalid email or password', type: 'authentication_error' },
+            });
+        }
+        clearAttempts(email);
         res.cookie(SESSION_COOKIE_NAME, session.accessToken, SESSION_COOKIE_OPTIONS);
-        // Load user data
-        const { success: loadSuccess, data: userData } = await auth.loadUserData(session.user.id || session.user.email);
-        res.json({
-            success: true,
-            user: session.user,
-            userData: loadSuccess ? userData : null,
-        });
+        return res.json({ success: true, token: session.accessToken, user: session.user });
     }
     catch (err) {
         console.error('[auth] Login error:', err);
@@ -184,9 +337,19 @@ authRouter.post('/login', async (req, res) => {
 // ============================================================================
 // POST /api/auth/logout
 // ============================================================================
-// Invalidate the current session
 authRouter.post('/logout', async (req, res) => {
     try {
+        if (USE_DEV_AUTH) {
+            // Bump session_version to invalidate all tokens for this user
+            const token = extractToken(req);
+            if (token) {
+                const result = verifyLocalToken(token);
+                if (result.valid && result.user) {
+                    const db = getDb();
+                    db.prepare('UPDATE users SET session_version = session_version + 1 WHERE id = ?').run(result.user.id);
+                }
+            }
+        }
         res.clearCookie(SESSION_COOKIE_NAME);
         res.json({ success: true, message: 'Logged out successfully' });
     }
@@ -198,19 +361,13 @@ authRouter.post('/logout', async (req, res) => {
 // ============================================================================
 // GET /api/auth/me
 // ============================================================================
-// Get current user info (requires authentication)
-authRouter.get('/me', verifyAuthMiddleware, async (req, res) => {
+authRouter.get('/me', requireAuth, async (req, res) => {
     try {
         const user = req.user;
         if (!user) {
             return res.status(401).json({ error: { message: 'Not authenticated' } });
         }
-        // Load user data
-        const { success, data: userData } = await auth.loadUserData(user.id || user.email);
-        res.json({
-            user,
-            userData: success ? userData : null,
-        });
+        res.json({ user, userData: null });
     }
     catch (err) {
         console.error('[auth] Me endpoint error:', err);
@@ -220,80 +377,52 @@ authRouter.get('/me', verifyAuthMiddleware, async (req, res) => {
 // ============================================================================
 // POST /api/auth/forgot-password
 // ============================================================================
-// Request a password reset email
-const forgotPasswordSchema = z.object({
-    email: z.string().email(),
-});
 authRouter.post('/forgot-password', async (req, res) => {
     try {
-        const parsed = forgotPasswordSchema.safeParse(req.body);
-        if (!parsed.success) {
-            return res.status(400).json({
-                error: { message: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') },
-            });
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: { message: 'Email required' } });
         }
-        const { email } = parsed.data;
-        // Request password reset
-        const result = await auth.requestPasswordReset(email);
-        if (!result.success) {
-            return res.status(400).json({
-                error: { message: 'Failed to request password reset' },
-            });
+        if (!USE_DEV_AUTH) {
+            await supaAuth.requestPasswordReset(email);
         }
-        res.json({
-            success: true,
-            message: 'If an account exists with this email, a password reset link has been sent',
-        });
+        res.json({ success: true, message: 'If an account exists, a reset link has been sent.' });
     }
     catch (err) {
         console.error('[auth] Forgot password error:', err);
-        res.status(500).json({ error: { message: 'Failed to process password reset request' } });
+        res.status(500).json({ error: { message: 'Failed to process password reset' } });
     }
 });
 // ============================================================================
-// POST /api/auth/reset-password
-// ============================================================================
-// Complete password reset with token (this would be handled by Supabase directly in production)
-const resetPasswordSchema = z.object({
-    token: z.string(),
-    password: z.string().min(8),
-});
-authRouter.post('/reset-password', async (req, res) => {
-    try {
-        const parsed = resetPasswordSchema.safeParse(req.body);
-        if (!parsed.success) {
-            return res.status(400).json({
-                error: { message: parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ') },
-            });
-        }
-        // In production, use Supabase's password reset token verification
-        // This is a simplified implementation - Supabase handles the actual reset via the dashboard
-        res.json({
-            success: true,
-            message: 'Password reset completed. Please log in with your new password.',
-        });
-    }
-    catch (err) {
-        console.error('[auth] Reset password error:', err);
-        res.status(500).json({ error: { message: 'Failed to reset password' } });
-    }
-});
-// ============================================================================
-// Export middleware for protected routes
+// requireAuth middleware — checks Bearer token or session cookie
 // ============================================================================
 export async function requireAuth(req, res, next) {
-    const token = req.cookies?.[SESSION_COOKIE_NAME];
+    const token = extractToken(req);
     if (!token) {
         res.status(401).json({ error: { message: 'Authentication required' } });
         return;
     }
-    // Verify token
-    const { valid, user } = await auth.verifyAccessToken(token);
+    if (USE_DEV_AUTH) {
+        const { valid, user } = verifyLocalToken(token);
+        if (!valid || !user) {
+            res.clearCookie(SESSION_COOKIE_NAME);
+            res.status(401).json({ error: { message: 'Invalid or expired session' } });
+            return;
+        }
+        req.user = user;
+        next();
+        return;
+    }
+    // Supabase mode
+    const { valid, user, error } = await supaAuth.verifyAccessToken(token);
     if (!valid || !user) {
-        res.status(401).json({ error: { message: 'Invalid or expired session' } });
+        res.clearCookie(SESSION_COOKIE_NAME);
+        res.status(401).json({ error: { message: error || 'Invalid or expired session' } });
         return;
     }
     req.user = user;
     next();
 }
+// Alias for backward compat
+export const verifyAuthMiddleware = requireAuth;
 //# sourceMappingURL=auth-supabase.js.map

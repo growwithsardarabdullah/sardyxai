@@ -12,10 +12,11 @@ import { fallbackRouter } from './routes/fallback.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
-import { authRouter } from './routes/auth-supabase.js';
+import { authRouter, requireAuth } from './routes/auth-supabase.js';
 import { userDataRouter } from './routes/user-data.js';
 import { createProxyRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { initDevMode } from './services/auth-dev.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DASHBOARD_ORIGINS = [
     'http://localhost:5173',
@@ -32,6 +33,11 @@ function getAllowedCorsOrigins() {
 export function createApp() {
     const app = express();
     const allowedCorsOrigins = getAllowedCorsOrigins();
+    // Initialize dev-mode auth tables (no-op when Supabase is configured)
+    try {
+        initDevMode();
+    }
+    catch { /* ignore if DB not yet initialized */ }
     // CSP intentionally disabled — the SPA bundles inline styles and the OG
     // image is loaded from the same origin; enabling helmet's default CSP
     // breaks the React build's hashed-asset loader. HSTS off because this is
@@ -73,11 +79,11 @@ export function createApp() {
     app.use('/api/user', userDataRouter);
     // API routes — legacy endpoints (can add requireAuth back if needed)
     app.use('/api/keys', keysRouter);
-    app.use('/api/models', modelsRouter);
-    app.use('/api/fallback', fallbackRouter);
-    app.use('/api/analytics', analyticsRouter);
-    app.use('/api/health', healthRouter);
-    app.use('/api/settings', settingsRouter);
+    app.use('/api/models', requireAuth, modelsRouter);
+    app.use('/api/fallback', requireAuth, fallbackRouter);
+    app.use('/api/analytics', requireAuth, analyticsRouter);
+    app.use('/api/health', requireAuth, healthRouter);
+    app.use('/api/settings', requireAuth, settingsRouter);
     // OpenAI-compatible proxy. Per-IP rate limiting (#35 item #6) runs first so
     // it throttles unauthenticated brute-force / flood attempts before any
     // routing work. Tune via PROXY_RATE_LIMIT_RPM; 0 disables it.
@@ -157,6 +163,37 @@ export function createApp() {
     });
     // Error handler (for API routes)
     app.use(errorHandler);
+    // Explicit MIME type detection for static assets
+    // This ensures files are served with correct content types on platforms like Vercel
+    app.use((req, res, next) => {
+        if (req.path.includes('.')) {
+            // Has file extension
+            const ext = path.extname(req.path).toLowerCase();
+            // Map extensions to MIME types
+            const mimeTypes = {
+                '.js': 'application/javascript; charset=utf-8',
+                '.mjs': 'application/javascript; charset=utf-8',
+                '.css': 'text/css; charset=utf-8',
+                '.html': 'text/html; charset=utf-8',
+                '.json': 'application/json; charset=utf-8',
+                '.svg': 'image/svg+xml',
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.ico': 'image/x-icon',
+                '.woff': 'font/woff',
+                '.woff2': 'font/woff2',
+                '.ttf': 'font/ttf',
+                '.eot': 'application/vnd.ms-fontobject',
+            };
+            const mimeType = mimeTypes[ext];
+            if (mimeType) {
+                res.setHeader('Content-Type', mimeType);
+            }
+        }
+        next();
+    });
     // Serve client static files (after API error handler)
     // Try multiple path resolutions for compatibility with different environments
     const possibleClientDist = [
@@ -254,19 +291,6 @@ export function createApp() {
         }
         next();
     });
-    // Check if client dist exists before serving with express.static
-    if (clientDist && fs.existsSync(clientDist)) {
-        console.log(`[app] Registering express.static for: ${clientDist}`);
-        app.use(express.static(clientDist, {
-            maxAge: '1d',
-            etag: false,
-            fallthrough: true, // Continue to next middleware if file not found
-            dotfiles: 'ignore', // Ignore .gitkeep and other dot files
-        }));
-    }
-    else {
-        console.warn('[app] Skipping express.static - client dist not accessible');
-    }
     // Check if client dist exists before serving with express.static
     if (clientDist && fs.existsSync(clientDist)) {
         console.log(`[app] Registering express.static for: ${clientDist}`);
