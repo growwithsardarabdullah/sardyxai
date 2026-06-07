@@ -5,22 +5,11 @@
   "env": {
     "NODE_ENV": "production"
   },
-  "public": "client/dist",
   "functions": {
-    "api/index.js": {
+    "index.js": {
       "runtime": "nodejs20.x",
       "maxDuration": 60,
-      "includeFiles": "client/dist/**"
+      "includeFiles": "../client/dist/**"
     }
-  },
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
-    },
-    {
-      "source": "/v1/(.*)",
-      "destination": "/api/index.js"
-    }
-  ]
+  }
 }
