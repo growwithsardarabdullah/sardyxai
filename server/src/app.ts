@@ -208,13 +208,16 @@ export function createApp() {
   // Serve client static files (after API error handler)
   // Try multiple path resolutions for compatibility with different environments
   const possibleClientDist = [
-    // Vercel-specific path (where public directory gets served from)
+    // Vercel: copy-client-dist.js puts the built SPA next to the server bundle
+    path.resolve(__dirname, 'public'),
+    // Vercel (legacy locations)
     path.resolve(process.cwd(), 'client/dist'),
     path.resolve(__dirname, '../../client/dist'),
     path.resolve(__dirname, '../../../client/dist'),
     path.resolve(__dirname, '../../../../client/dist'),
     path.join(process.cwd(), '..', 'client', 'dist'),
     '/var/task/client/dist',
+    '/var/task/server/dist/public',
   ];
 
   let clientDist: string | null = null;
@@ -299,14 +302,18 @@ export function createApp() {
         next();
         return;
       }
-      
+
       if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
         console.log(`[app] Serving static file: ${req.path}`);
         res.sendFile(filePath);
         return;
       }
+      // File not found in clientDist — log it so we can diagnose Vercel fs quirks.
+      console.warn(`[app] Static miss: clientDist=${clientDist} path=${req.path} filePath=${filePath} exists=${fs.existsSync(filePath)}`);
+    } else {
+      console.warn(`[app] Static miss: clientDist not set, path=${req.path}`);
     }
-    
+
     next();
   });
   
