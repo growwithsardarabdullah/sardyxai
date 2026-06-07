@@ -198,13 +198,11 @@ export function createApp() {
     // Try multiple path resolutions for compatibility with different environments
     const possibleClientDist = [
         // Vercel-specific path (where public directory gets served from)
-        'client/dist',
-        path.resolve(__dirname, '../../client/dist'),
         path.resolve(process.cwd(), 'client/dist'),
-        path.join(process.cwd(), '..', 'client', 'dist'),
-        // Alternative paths
+        path.resolve(__dirname, '../../client/dist'),
         path.resolve(__dirname, '../../../client/dist'),
         path.resolve(__dirname, '../../../../client/dist'),
+        path.join(process.cwd(), '..', 'client', 'dist'),
         '/var/task/client/dist',
     ];
     let clientDist = null;
@@ -224,9 +222,10 @@ export function createApp() {
                     console.log(`[app] Not a directory: ${possiblePath}`);
                     continue;
                 }
-                // Found it
-                clientDist = possiblePath;
-                clientIndexPath = path.join(possiblePath, 'index.html');
+                // Found it — always store the absolute path so res.sendFile() works
+                // regardless of the platform/CWD combination Vercel hands us.
+                clientDist = path.resolve(possiblePath);
+                clientIndexPath = path.join(clientDist, 'index.html');
                 console.log(`[app] ✓ Found client dist at: ${clientDist}`);
                 break;
             }
