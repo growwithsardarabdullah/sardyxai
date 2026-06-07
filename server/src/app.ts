@@ -226,6 +226,23 @@ export function createApp() {
   console.log(`[app] __dirname: ${__dirname}`);
   console.log(`[app] process.cwd(): ${process.cwd()}`);
 
+  // Debug: list top-level directories Vercel shipped in the function bundle
+  try {
+    const taskContents = fs.readdirSync('/var/task');
+    console.log(`[app] /var/task contents: ${taskContents.join(', ')}`);
+    for (const entry of taskContents) {
+      try {
+        const stat = fs.statSync(path.join('/var/task', entry));
+        if (stat.isDirectory()) {
+          const sub = fs.readdirSync(path.join('/var/task', entry));
+          console.log(`[app] /var/task/${entry} contents: ${sub.slice(0, 30).join(', ')}${sub.length > 30 ? '...' : ''}`);
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn(`[app] Could not list /var/task: ${(e as Error).message}`);
+  }
+
   try {
     for (const possiblePath of possibleClientDist) {
       try {
